@@ -1,0 +1,47 @@
+{
+ "success": true,
+ "data": [
+  {
+   "level": 0,
+   "maker_fee_rate": "0.00015",
+   "taker_fee_rate": "0.0004"
+  },
+  {
+   "level": 1,
+   "maker_fee_rate": "0.00012",
+   "taker_fee_rate": "0.00038"
+  },
+  {
+   "level": 2,
+   "maker_fee_rate": "0.00009",
+   "taker_fee_rate": "0.00036"
+  },
+  {
+   "level": 3,
+   "maker_fee_rate": "0.00006",
+   "taker_fee_rate": "0.00034"
+  },
+  {
+   "level": 4,
+   "maker_fee_rate": "0.00003",
+   "taker_fee_rate": "0.00032"
+  },
+  {
+   "level": 5,
+   "maker_fee_rate": "0.00000",
+   "taker_fee_rate": "0.0003"
+  },
+  {
+   "level": 6,
+   "maker_fee_rate": "0.00000",
+   "taker_fee_rate": "0.00029"
+  },
+  {
+   "level": 7,
+   "maker_fee_rate": "0.00000",
+   "taker_fee_rate": "0.00028"
+  }
+ ],
+ "error": null,
+ "code": null
+}

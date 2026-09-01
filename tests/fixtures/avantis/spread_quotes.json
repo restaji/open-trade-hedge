@@ -1,0 +1,784 @@
+{
+ "0|52368565540|long|open": {
+  "pair": "ETH/USD",
+  "request": {
+   "pairIndex": 0,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "52368565540",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "0|52368565540|long|close": {
+  "pair": "ETH/USD",
+  "request": {
+   "pairIndex": 0,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "52368565540",
+   "isLong": true,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100001735",
+   "estimatedSpreadPctWithFlow10": "100001735",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "0|52368565540|short|open": {
+  "pair": "ETH/USD",
+  "request": {
+   "pairIndex": 0,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "52368565540",
+   "isLong": false,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100001735",
+   "estimatedSpreadPctWithFlow10": "100001735",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "0|52368565540|short|close": {
+  "pair": "ETH/USD",
+  "request": {
+   "pairIndex": 0,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "52368565540",
+   "isLong": false,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "129672333",
+   "estimatedSpreadPctWithFlow10": "129672333",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "1|1546483521|long|open": {
+  "pair": "BTC/USD",
+  "request": {
+   "pairIndex": 1,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1546483521",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "296873911",
+   "estimatedSpreadPctWithFlow10": "296873911",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "1|1546483521|long|close": {
+  "pair": "BTC/USD",
+  "request": {
+   "pairIndex": 1,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1546483521",
+   "isLong": true,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "101345093",
+   "estimatedSpreadPctWithFlow10": "101345093",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "1|1546483521|short|open": {
+  "pair": "BTC/USD",
+  "request": {
+   "pairIndex": 1,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1546483521",
+   "isLong": false,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "101345093",
+   "estimatedSpreadPctWithFlow10": "101345093",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "1|1546483521|short|close": {
+  "pair": "BTC/USD",
+  "request": {
+   "pairIndex": 1,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1546483521",
+   "isLong": false,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "21|22681857462|long|open": {
+  "pair": "XAU/USD",
+  "request": {
+   "pairIndex": 21,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "22681857462",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "21|22681857462|long|close": {
+  "pair": "XAU/USD",
+  "request": {
+   "pairIndex": 21,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "22681857462",
+   "isLong": true,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "21|22681857462|short|open": {
+  "pair": "XAU/USD",
+  "request": {
+   "pairIndex": 21,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "22681857462",
+   "isLong": false,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "21|22681857462|short|close": {
+  "pair": "XAU/USD",
+  "request": {
+   "pairIndex": 21,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "22681857462",
+   "isLong": false,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "78|128985641821|long|open": {
+  "pair": "US500/USD",
+  "request": {
+   "pairIndex": 78,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "128985641821",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "300000000",
+   "estimatedSpreadPctWithFlow10": "300000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "78|128985641821|long|close": {
+  "pair": "US500/USD",
+  "request": {
+   "pairIndex": 78,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "128985641821",
+   "isLong": true,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "300000000",
+   "estimatedSpreadPctWithFlow10": "300000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "78|128985641821|short|open": {
+  "pair": "US500/USD",
+  "request": {
+   "pairIndex": 78,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "128985641821",
+   "isLong": false,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "300000000",
+   "estimatedSpreadPctWithFlow10": "300000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "78|128985641821|short|close": {
+  "pair": "US500/USD",
+  "request": {
+   "pairIndex": 78,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "128985641821",
+   "isLong": false,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "300000000",
+   "estimatedSpreadPctWithFlow10": "300000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "81|442123785817|long|open": {
+  "pair": "NVDA/USD",
+  "request": {
+   "pairIndex": 81,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "442123785817",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "300000000",
+   "estimatedSpreadPctWithFlow10": "300000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "81|442123785817|long|close": {
+  "pair": "NVDA/USD",
+  "request": {
+   "pairIndex": 81,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "442123785817",
+   "isLong": true,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "300000000",
+   "estimatedSpreadPctWithFlow10": "300000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "81|442123785817|short|open": {
+  "pair": "NVDA/USD",
+  "request": {
+   "pairIndex": 81,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "442123785817",
+   "isLong": false,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "300000000",
+   "estimatedSpreadPctWithFlow10": "300000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "81|442123785817|short|close": {
+  "pair": "NVDA/USD",
+  "request": {
+   "pairIndex": 81,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "442123785817",
+   "isLong": false,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "300000000",
+   "estimatedSpreadPctWithFlow10": "300000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "96|1222567719859|long|open": {
+  "pair": "WTI/USD",
+  "request": {
+   "pairIndex": 96,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1222567719859",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "884069075",
+   "estimatedSpreadPctWithFlow10": "884069075",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "96|1222567719859|long|close": {
+  "pair": "WTI/USD",
+  "request": {
+   "pairIndex": 96,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1222567719859",
+   "isLong": true,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "884069075",
+   "estimatedSpreadPctWithFlow10": "884069075",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "96|1222567719859|short|open": {
+  "pair": "WTI/USD",
+  "request": {
+   "pairIndex": 96,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1222567719859",
+   "isLong": false,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "707213579",
+   "estimatedSpreadPctWithFlow10": "707213579",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "96|1222567719859|short|close": {
+  "pair": "WTI/USD",
+  "request": {
+   "pairIndex": 96,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1222567719859",
+   "isLong": false,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "706880302",
+   "estimatedSpreadPctWithFlow10": "706880302",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "116|1546483521|long|open": {
+  "pair": "BTC_UPSIDE/USD",
+  "request": {
+   "pairIndex": 116,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1546483521",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "116|1546483521|long|close": {
+  "pair": "BTC_UPSIDE/USD",
+  "request": {
+   "pairIndex": 116,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1546483521",
+   "isLong": true,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "116|1546483521|short|open": {
+  "pair": "BTC_UPSIDE/USD",
+  "request": {
+   "pairIndex": 116,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1546483521",
+   "isLong": false,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "116|1546483521|short|close": {
+  "pair": "BTC_UPSIDE/USD",
+  "request": {
+   "pairIndex": 116,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "1546483521",
+   "isLong": false,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "100000000",
+   "estimatedSpreadPctWithFlow10": "100000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "11|86246302189793|long|open": {
+  "pair": "EUR/USD",
+  "request": {
+   "pairIndex": 11,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "86246302189793",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "50000000",
+   "estimatedSpreadPctWithFlow10": "50000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "11|86246302189793|long|close": {
+  "pair": "EUR/USD",
+  "request": {
+   "pairIndex": 11,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "86246302189793",
+   "isLong": true,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "50000000",
+   "estimatedSpreadPctWithFlow10": "50000000",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "11|86246302189793|short|open": {
+  "pair": "EUR/USD",
+  "request": {
+   "pairIndex": 11,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "86246302189793",
+   "isLong": false,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "51422695",
+   "estimatedSpreadPctWithFlow10": "51422695",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "11|86246302189793|short|close": {
+  "pair": "EUR/USD",
+  "request": {
+   "pairIndex": 11,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "86246302189793",
+   "isLong": false,
+   "isOpen": false,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "51421372",
+   "estimatedSpreadPctWithFlow10": "51421372",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "0|10000000000|long|open": {
+  "pair": "ETH/USD",
+  "request": {
+   "pairIndex": 0,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "10000000000",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "211968446",
+   "estimatedSpreadPctWithFlow10": "211968446",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ },
+ "0|100000000000|long|open": {
+  "pair": "ETH/USD",
+  "request": {
+   "pairIndex": 0,
+   "trader": "0x0000000000000000000000000000000000000000",
+   "coinSize10": "100000000000",
+   "isLong": true,
+   "isOpen": true,
+   "orderType": 0
+  },
+  "status": 201,
+  "response": {
+   "spreadMechanism": 4,
+   "byPass": true,
+   "spreadPctWithoutFlow10": "236552906",
+   "estimatedSpreadPctWithFlow10": "236552906",
+   "flowParams": {
+    "impactParam10": "0",
+    "depth10": "0",
+    "maxSpreadPct10": "0"
+   }
+  }
+ }
+}

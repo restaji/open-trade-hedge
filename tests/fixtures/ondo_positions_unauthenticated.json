@@ -1,0 +1,8 @@
+{
+ "status_code": 401,
+ "body": {
+  "success": false,
+  "error": "No Authorization header",
+  "error_code": "auth_missing"
+ }
+}

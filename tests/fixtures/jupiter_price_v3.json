@@ -1,0 +1,26 @@
+{
+ "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh": {
+  "createdAt": "2024-06-07T10:45:14.408Z",
+  "liquidity": 29854379.70832103,
+  "usdPrice": 66004.74451450625,
+  "blockId": 440287447,
+  "decimals": 8,
+  "priceChange24h": 2.1323787857923415
+ },
+ "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": {
+  "createdAt": "2024-06-07T10:45:14.408Z",
+  "liquidity": 13927908.380037863,
+  "usdPrice": 1969.8619409667829,
+  "blockId": 440287444,
+  "decimals": 8,
+  "priceChange24h": 2.8851893304059786
+ },
+ "So11111111111111111111111111111111111111112": {
+  "createdAt": "2024-06-05T08:55:25.527Z",
+  "liquidity": 678991327.532678,
+  "usdPrice": 80.73489505722027,
+  "blockId": 440287447,
+  "decimals": 9,
+  "priceChange24h": 5.14330377936469
+ }
+}

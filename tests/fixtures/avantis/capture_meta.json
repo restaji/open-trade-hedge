@@ -1,0 +1,29 @@
+{
+ "captured_at_utc": "2026-08-19T14:49:00.883685+00:00",
+ "requests": [
+  {
+   "method": "GET",
+   "url": "https://prod-api.avantisfi.com/data/v2/trading",
+   "status": 200,
+   "file": "trading_v2.json"
+  },
+  {
+   "method": "GET",
+   "url": "https://feed-v3.avantisfi.com/v1/price-feeds/last-price",
+   "status": 200,
+   "file": "last_price.json"
+  },
+  {
+   "method": "GET",
+   "url": "https://prod-api.avantisfi.com/core/v2/open-interests",
+   "status": 200,
+   "file": "open_interests.json"
+  },
+  {
+   "method": "POST",
+   "url": "https://prod-api.avantisfi.com/risk/v2/spread",
+   "count": 34,
+   "file": "spread_quotes.json"
+  }
+ ]
+}

@@ -1,0 +1,795 @@
+{
+ "result": {
+  "event_time": "1787151692100000000",
+  "instrument": "BTC_USDT_Perp",
+  "bids": [
+   {
+    "price": "65955.0",
+    "size": "8.537",
+    "num_orders": 3
+   },
+   {
+    "price": "65953.0",
+    "size": "0.331",
+    "num_orders": 1
+   },
+   {
+    "price": "65952.3",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "65950.4",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65948.2",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65945.9",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65944.7",
+    "size": "0.007",
+    "num_orders": 1
+   },
+   {
+    "price": "65942.3",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65936.4",
+    "size": "3.701",
+    "num_orders": 1
+   },
+   {
+    "price": "65934.9",
+    "size": "0.49",
+    "num_orders": 1
+   },
+   {
+    "price": "65925.9",
+    "size": "0.063",
+    "num_orders": 1
+   },
+   {
+    "price": "65916.7",
+    "size": "2.032",
+    "num_orders": 1
+   },
+   {
+    "price": "65914.4",
+    "size": "3.703",
+    "num_orders": 1
+   },
+   {
+    "price": "65902.1",
+    "size": "0.008",
+    "num_orders": 2
+   },
+   {
+    "price": "65896.2",
+    "size": "0.063",
+    "num_orders": 1
+   },
+   {
+    "price": "65881.4",
+    "size": "1.94",
+    "num_orders": 1
+   },
+   {
+    "price": "65856.3",
+    "size": "5.717",
+    "num_orders": 1
+   },
+   {
+    "price": "65824.5",
+    "size": "0.263",
+    "num_orders": 1
+   },
+   {
+    "price": "65816.8",
+    "size": "4.679",
+    "num_orders": 1
+   },
+   {
+    "price": "65798.6",
+    "size": "0.093",
+    "num_orders": 1
+   },
+   {
+    "price": "65763.9",
+    "size": "0.346",
+    "num_orders": 1
+   },
+   {
+    "price": "65758.6",
+    "size": "0.093",
+    "num_orders": 1
+   },
+   {
+    "price": "65758.2",
+    "size": "0.093",
+    "num_orders": 1
+   },
+   {
+    "price": "65711.8",
+    "size": "0.651",
+    "num_orders": 1
+   },
+   {
+    "price": "65605.7",
+    "size": "0.696",
+    "num_orders": 1
+   },
+   {
+    "price": "65529.9",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "65217.5",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "65009.1",
+    "size": "0.005",
+    "num_orders": 1
+   },
+   {
+    "price": "64963.7",
+    "size": "0.004",
+    "num_orders": 1
+   },
+   {
+    "price": "64845.0",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "64777.0",
+    "size": "0.014",
+    "num_orders": 1
+   },
+   {
+    "price": "64671.5",
+    "size": "0.045",
+    "num_orders": 1
+   },
+   {
+    "price": "64518.8",
+    "size": "0.531",
+    "num_orders": 1
+   },
+   {
+    "price": "64500.0",
+    "size": "1.0",
+    "num_orders": 1
+   },
+   {
+    "price": "64321.0",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "63954.2",
+    "size": "0.071",
+    "num_orders": 1
+   },
+   {
+    "price": "63860.5",
+    "size": "0.546",
+    "num_orders": 1
+   },
+   {
+    "price": "63759.2",
+    "size": "0.035",
+    "num_orders": 1
+   },
+   {
+    "price": "63636.3",
+    "size": "0.1",
+    "num_orders": 1
+   },
+   {
+    "price": "63600.0",
+    "size": "0.05",
+    "num_orders": 1
+   },
+   {
+    "price": "63400.0",
+    "size": "0.029",
+    "num_orders": 1
+   },
+   {
+    "price": "63273.4",
+    "size": "0.561",
+    "num_orders": 1
+   },
+   {
+    "price": "63101.9",
+    "size": "0.106",
+    "num_orders": 1
+   },
+   {
+    "price": "63100.0",
+    "size": "1.0",
+    "num_orders": 1
+   },
+   {
+    "price": "63000.0",
+    "size": "0.063",
+    "num_orders": 2
+   },
+   {
+    "price": "62955.0",
+    "size": "0.014",
+    "num_orders": 1
+   },
+   {
+    "price": "62830.0",
+    "size": "1.09",
+    "num_orders": 1
+   },
+   {
+    "price": "62776.0",
+    "size": "0.578",
+    "num_orders": 1
+   },
+   {
+    "price": "62550.0",
+    "size": "0.014",
+    "num_orders": 1
+   },
+   {
+    "price": "62500.0",
+    "size": "0.048",
+    "num_orders": 3
+   },
+   {
+    "price": "62450.0",
+    "size": "0.009",
+    "num_orders": 1
+   },
+   {
+    "price": "62441.7",
+    "size": "0.103",
+    "num_orders": 1
+   },
+   {
+    "price": "62410.0",
+    "size": "0.055",
+    "num_orders": 2
+   },
+   {
+    "price": "62332.0",
+    "size": "0.32",
+    "num_orders": 1
+   },
+   {
+    "price": "62250.0",
+    "size": "0.025",
+    "num_orders": 1
+   },
+   {
+    "price": "62200.0",
+    "size": "0.02",
+    "num_orders": 1
+   },
+   {
+    "price": "62188.0",
+    "size": "0.004",
+    "num_orders": 1
+   },
+   {
+    "price": "62000.0",
+    "size": "0.093",
+    "num_orders": 4
+   },
+   {
+    "price": "61666.0",
+    "size": "0.111",
+    "num_orders": 1
+   },
+   {
+    "price": "61600.0",
+    "size": "0.015",
+    "num_orders": 1
+   },
+   {
+    "price": "61500.0",
+    "size": "0.015",
+    "num_orders": 2
+   },
+   {
+    "price": "61200.0",
+    "size": "0.343",
+    "num_orders": 3
+   },
+   {
+    "price": "61162.0",
+    "size": "3.0",
+    "num_orders": 1
+   },
+   {
+    "price": "61112.0",
+    "size": "3.0",
+    "num_orders": 1
+   },
+   {
+    "price": "61000.0",
+    "size": "0.077",
+    "num_orders": 4
+   },
+   {
+    "price": "60520.6",
+    "size": "0.02",
+    "num_orders": 1
+   },
+   {
+    "price": "60500.0",
+    "size": "0.013",
+    "num_orders": 1
+   },
+   {
+    "price": "60201.3",
+    "size": "0.024",
+    "num_orders": 1
+   },
+   {
+    "price": "60118.0",
+    "size": "0.06",
+    "num_orders": 1
+   },
+   {
+    "price": "60000.0",
+    "size": "0.013",
+    "num_orders": 1
+   },
+   {
+    "price": "59921.0",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "59635.0",
+    "size": "0.036",
+    "num_orders": 1
+   },
+   {
+    "price": "59628.0",
+    "size": "1.0",
+    "num_orders": 1
+   },
+   {
+    "price": "59500.0",
+    "size": "0.013",
+    "num_orders": 1
+   },
+   {
+    "price": "59367.8",
+    "size": "0.02",
+    "num_orders": 1
+   },
+   {
+    "price": "59000.0",
+    "size": "0.029",
+    "num_orders": 2
+   },
+   {
+    "price": "58500.0",
+    "size": "0.013",
+    "num_orders": 1
+   },
+   {
+    "price": "58499.0",
+    "size": "0.004",
+    "num_orders": 1
+   },
+   {
+    "price": "58441.0",
+    "size": "0.004",
+    "num_orders": 1
+   },
+   {
+    "price": "58300.0",
+    "size": "0.011",
+    "num_orders": 1
+   },
+   {
+    "price": "58000.0",
+    "size": "0.028",
+    "num_orders": 3
+   },
+   {
+    "price": "57750.0",
+    "size": "0.017",
+    "num_orders": 1
+   },
+   {
+    "price": "57000.0",
+    "size": "0.07",
+    "num_orders": 1
+   },
+   {
+    "price": "56000.0",
+    "size": "0.088",
+    "num_orders": 2
+   },
+   {
+    "price": "55950.0",
+    "size": "0.017",
+    "num_orders": 1
+   },
+   {
+    "price": "55000.0",
+    "size": "0.162",
+    "num_orders": 2
+   },
+   {
+    "price": "54000.0",
+    "size": "0.074",
+    "num_orders": 1
+   },
+   {
+    "price": "53950.0",
+    "size": "0.018",
+    "num_orders": 1
+   },
+   {
+    "price": "53000.0",
+    "size": "0.075",
+    "num_orders": 1
+   },
+   {
+    "price": "52000.0",
+    "size": "0.076",
+    "num_orders": 1
+   },
+   {
+    "price": "51000.0",
+    "size": "0.078",
+    "num_orders": 1
+   },
+   {
+    "price": "50000.0",
+    "size": "0.21",
+    "num_orders": 2
+   },
+   {
+    "price": "49200.0",
+    "size": "0.05",
+    "num_orders": 1
+   },
+   {
+    "price": "49000.0",
+    "size": "0.081",
+    "num_orders": 1
+   }
+  ],
+  "asks": [
+   {
+    "price": "65955.1",
+    "size": "0.063",
+    "num_orders": 2
+   },
+   {
+    "price": "65963.7",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "65966.1",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65967.7",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65969.4",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65972.1",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65972.8",
+    "size": "0.532",
+    "num_orders": 1
+   },
+   {
+    "price": "65973.6",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65976.3",
+    "size": "0.727",
+    "num_orders": 1
+   },
+   {
+    "price": "65979.3",
+    "size": "0.063",
+    "num_orders": 1
+   },
+   {
+    "price": "65987.5",
+    "size": "0.004",
+    "num_orders": 1
+   },
+   {
+    "price": "65988.7",
+    "size": "0.093",
+    "num_orders": 1
+   },
+   {
+    "price": "65991.8",
+    "size": "3.274",
+    "num_orders": 1
+   },
+   {
+    "price": "65999.7",
+    "size": "9.213",
+    "num_orders": 1
+   },
+   {
+    "price": "66004.9",
+    "size": "3.697",
+    "num_orders": 1
+   },
+   {
+    "price": "66006.2",
+    "size": "0.063",
+    "num_orders": 1
+   },
+   {
+    "price": "66015.6",
+    "size": "1.936",
+    "num_orders": 1
+   },
+   {
+    "price": "66017.0",
+    "size": "3.651",
+    "num_orders": 1
+   },
+   {
+    "price": "66028.0",
+    "size": "0.009",
+    "num_orders": 1
+   },
+   {
+    "price": "66029.0",
+    "size": "0.009",
+    "num_orders": 1
+   },
+   {
+    "price": "66040.1",
+    "size": "0.093",
+    "num_orders": 1
+   },
+   {
+    "price": "66067.8",
+    "size": "4.661",
+    "num_orders": 1
+   },
+   {
+    "price": "66075.0",
+    "size": "0.424",
+    "num_orders": 1
+   },
+   {
+    "price": "66118.4",
+    "size": "0.557",
+    "num_orders": 1
+   },
+   {
+    "price": "66129.3",
+    "size": "0.004",
+    "num_orders": 1
+   },
+   {
+    "price": "66187.9",
+    "size": "1.049",
+    "num_orders": 1
+   },
+   {
+    "price": "66200.0",
+    "size": "0.091",
+    "num_orders": 1
+   },
+   {
+    "price": "66310.0",
+    "size": "0.02",
+    "num_orders": 1
+   },
+   {
+    "price": "66338.1",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "66361.5",
+    "size": "1.121",
+    "num_orders": 1
+   },
+   {
+    "price": "66397.1",
+    "size": "1.406",
+    "num_orders": 1
+   },
+   {
+    "price": "66400.0",
+    "size": "0.016",
+    "num_orders": 1
+   },
+   {
+    "price": "66404.5",
+    "size": "0.02",
+    "num_orders": 1
+   },
+   {
+    "price": "66453.9",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "66500.0",
+    "size": "0.105",
+    "num_orders": 4
+   },
+   {
+    "price": "66666.8",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "66704.2",
+    "size": "0.005",
+    "num_orders": 1
+   },
+   {
+    "price": "66860.0",
+    "size": "0.1",
+    "num_orders": 1
+   },
+   {
+    "price": "67000.0",
+    "size": "0.066",
+    "num_orders": 3
+   },
+   {
+    "price": "67152.4",
+    "size": "0.531",
+    "num_orders": 1
+   },
+   {
+    "price": "67154.0",
+    "size": "0.182",
+    "num_orders": 1
+   },
+   {
+    "price": "67200.0",
+    "size": "0.003",
+    "num_orders": 1
+   },
+   {
+    "price": "67250.0",
+    "size": "0.01",
+    "num_orders": 1
+   },
+   {
+    "price": "67459.1",
+    "size": "0.02",
+    "num_orders": 1
+   },
+   {
+    "price": "67500.0",
+    "size": "0.03",
+    "num_orders": 2
+   },
+   {
+    "price": "67810.7",
+    "size": "0.546",
+    "num_orders": 1
+   },
+   {
+    "price": "67910.2",
+    "size": "0.067",
+    "num_orders": 1
+   },
+   {
+    "price": "67980.0",
+    "size": "0.033",
+    "num_orders": 1
+   },
+   {
+    "price": "68300.0",
+    "size": "0.037",
+    "num_orders": 2
+   },
+   {
+    "price": "68546.2",
+    "size": "0.561",
+    "num_orders": 1
+   },
+   {
+    "price": "68640.0",
+    "size": "0.101",
+    "num_orders": 1
+   },
+   {
+    "price": "68660.5",
+    "size": "0.02",
+    "num_orders": 1
+   },
+   {
+    "price": "68692.2",
+    "size": "0.578",
+    "num_orders": 1
+   },
+   {
+    "price": "69100.6",
+    "size": "0.005",
+    "num_orders": 1
+   },
+   {
+    "price": "69123.0",
+    "size": "0.004",
+    "num_orders": 1
+   },
+   {
+    "price": "69600.0",
+    "size": "0.03",
+    "num_orders": 2
+   },
+   {
+    "price": "70000.0",
+    "size": "0.004",
+    "num_orders": 1
+   },
+   {
+    "price": "70900.0",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "72200.0",
+    "size": "0.002",
+    "num_orders": 1
+   },
+   {
+    "price": "76920.0",
+    "size": "0.5",
+    "num_orders": 1
+   },
+   {
+    "price": "120000.0",
+    "size": "0.134",
+    "num_orders": 1
+   },
+   {
+    "price": "625194.0",
+    "size": "0.001",
+    "num_orders": 1
+   },
+   {
+    "price": "999999999.0",
+    "size": "0.001",
+    "num_orders": 1
+   }
+  ]
+ }
+}
