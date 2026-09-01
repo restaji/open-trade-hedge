@@ -52,9 +52,12 @@ serves the paste-an-address UI at `/` and the JSON API under `/api`.
 | `GET` | `/api/health` | — | Liveness. Does not hit venues |
 | `GET` | `/docs` | — | Interactive Swagger UI (generated from the app) |
 | `GET` | `/api/prices` | — | Ostium mark prices (the UI polls this) |
-| `POST` | `/api/scan` | `{"addresses": ["0x…", "SolanaPubkey"]}` | Positions + Avantis hedge quotes |
+| `GET` | `/api/scan` | `?addresses=0x…` (repeat or comma-separate) | Positions + Avantis hedge quotes |
+| `POST` | `/api/scan` | `{"addresses": ["0x…", "SolanaPubkey"]}` | Same payload as GET |
 
 ```bash
+curl -sS "https://YOUR-DEPLOYMENT.vercel.app/api/scan?addresses=0xYOUR_EVM_ADDRESS"
+
 curl -sS -X POST https://YOUR-DEPLOYMENT.vercel.app/api/scan \
   -H 'Content-Type: application/json' \
   -d '{"addresses":["0xYOUR_EVM_ADDRESS","YOUR_SOLANA_PUBKEY"]}'

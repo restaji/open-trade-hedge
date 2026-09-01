@@ -6,6 +6,7 @@ Serves:
   GET  /            → single-page app (HTML embedded below)
   GET  /api/health  → liveness probe
   GET  /api/prices  → Ostium mark prices (UI poll)
+  GET  /api/scan    → ?addresses=<addr>[,<addr>…]
   POST /api/scan    → {addresses: [str]} → positions + hedge opportunities
 """
 
@@ -17,7 +18,7 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -57,7 +58,7 @@ app = FastAPI(
     title="Hedge Scanner",
     description=(
         "Read-only perps portfolio and hedge-quote API. "
-        "POST `/api/scan` with one or more wallet addresses."
+        "GET or POST `/api/scan` with one or more wallet addresses."
     ),
     version="0.1.0",
 )
@@ -189,6 +190,17 @@ async def _source_carry_map(
 
 class ScanRequest(BaseModel):
     addresses: list[str]
+
+
+def _normalize_addresses(raw: list[str]) -> list[str]:
+    """Flatten query/body values; allow comma-separated addresses in one slot."""
+    out: list[str] = []
+    for item in raw:
+        for part in item.split(","):
+            addr = part.strip()
+            if addr:
+                out.append(addr)
+    return out
 
 
 async def _enrich_avantis(
@@ -342,9 +354,22 @@ async def api_health():
     return {"ok": True, "service": "hedge-scanner"}
 
 
+@app.get("/api/scan")
+async def api_scan_get(
+    addresses: list[str] = Query(
+        default=[],
+        description="Wallet addresses. Repeat the param or comma-separate.",
+    ),
+):
+    return await _run_scan(_normalize_addresses(addresses))
+
+
 @app.post("/api/scan")
-async def api_scan(req: ScanRequest):
-    addresses = [a.strip() for a in req.addresses if a.strip()]
+async def api_scan_post(req: ScanRequest):
+    return await _run_scan(_normalize_addresses(req.addresses))
+
+
+async def _run_scan(addresses: list[str]):
     if not addresses:
         return {"error": "No addresses provided"}
 

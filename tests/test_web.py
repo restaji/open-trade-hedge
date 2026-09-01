@@ -38,6 +38,12 @@ def test_scan_rejects_empty_address_list():
     assert response.json() == {"error": "No addresses provided"}
 
 
+def test_scan_get_rejects_missing_addresses():
+    response = client.get("/api/scan")
+    assert response.status_code == 200
+    assert response.json() == {"error": "No addresses provided"}
+
+
 def test_scan_rejects_malformed_body():
     response = client.post("/api/scan", json={"wallet": "0xabc"})
     assert response.status_code == 422
@@ -48,4 +54,6 @@ def test_openapi_is_published():
     assert response.status_code == 200
     spec = response.json()
     assert "/api/scan" in spec["paths"]
+    assert "get" in spec["paths"]["/api/scan"]
+    assert "post" in spec["paths"]["/api/scan"]
     assert "/api/health" in spec["paths"]
