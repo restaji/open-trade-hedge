@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 
-from hedge_scanner.adapters.base import make_http_client
+from hedge_scanner.adapters.base import make_http_client, record_mark
 from hedge_scanner.models import Quote
 
 VENUE = "avantis"
@@ -58,11 +58,11 @@ _HOURS_PER_YEAR = Decimal(8760)
 _LONG = "long"
 _SHORT = "short"
 
-# Carry policy (CONTRACT.md §12.9): Avantis has moved standard perps to
-# funding-only on-chain, but `/data/v2/trading` still publishes non-zero
-# `marginFee`. False zeroes borrow on the Quote so the scanner matches on-chain
-# accrual. Flip to True if Avantis re-enables the borrow charge.
-_INCLUDE_MARGIN_FEE_IN_CARRY = False
+# Carry policy: include `marginFee` so Avantis 24h matches the UI
+# "Net Rate (L/S) 24h" = (fundingRate + marginFee) × 24.
+# CONTRACT.md §12.9 originally dropped this (on-chain funding-only); reversed
+# 2026-09-02 to follow the live header on avantisfi.com.
+_INCLUDE_MARGIN_FEE_IN_CARRY = True
 
 
 @dataclass
@@ -165,6 +165,41 @@ async def fetch_prices(client: httpx.AsyncClient | None = None) -> dict[int, Dec
         }
 
     return await _price_cache.get("last_price", _load)
+
+
+async def get_marks(client: httpx.AsyncClient | None = None) -> dict[str, Decimal]:
+    """Oracle last-price keyed by ``from``, ``from/USD``, and canonical base.
+
+    Standard perps are indexed first so Upside records (``BTC_UPSIDE``)
+    cannot overwrite the standard BTC mark. Both share the same oracle.
+    """
+    snapshot, by_index = await asyncio.gather(
+        fetch_trading_snapshot(client),
+        fetch_prices(client),
+    )
+    standard: list[tuple[str, str, Decimal]] = []
+    upside: list[tuple[str, str, Decimal]] = []
+    for key, record in (snapshot.get("pairInfos") or {}).items():
+        if not isinstance(record, dict):
+            continue
+        try:
+            idx = int(record.get("pairIndex", key))
+        except (TypeError, ValueError):
+            continue
+        price = by_index.get(idx)
+        if price is None or price <= 0:
+            continue
+        from_sym = str(record.get("from") or "")
+        to_sym = str(record.get("to") or "USD")
+        if not from_sym:
+            continue
+        bucket = upside if "_UPSIDE" in from_sym.upper() else standard
+        bucket.append((from_sym, to_sym, price))
+    out: dict[str, Decimal] = {}
+    for from_sym, to_sym, price in (*standard, *upside):
+        record_mark(out, from_sym, price)
+        record_mark(out, f"{from_sym}/{to_sym}", price)
+    return out
 
 
 async def fetch_spread_bps(
@@ -271,8 +306,8 @@ def classify_skew_fee(
     A leg that moves the long share toward 0.5 is maker; away is taker; crossing
     0.5 is a size-weighted blend. ``reduce_side=True`` prices a close (size is
     removed from that side). Empty-book and exactly-balanced both fall through
-    to taker, matching the SDK. Retained as ground truth; ``quote_hedge`` prices
-    both legs at maker (CONTRACT.md §12.8) and does not call this.
+    to taker, matching the SDK. ``quote_hedge`` classifies the open against live
+    ``coinOI`` and applies the same tier to the close (CONTRACT.md §12.11).
     """
     before_total = coin_oi_long + coin_oi_short
     if before_total <= 0:
@@ -494,17 +529,28 @@ async def quote_hedge(
             quote.min_position_usd = Decimal(str(minimum))
         return quote
 
-    # Both legs at live maker rates (CONTRACT.md §12.8). A maker close requires
-    # skew to have moved in our favour; against an unchanged book the close is
-    # taker. Read `additionalPairParams2`, not docs or legacy `openFeeP`.
+    # Maker/taker is OI-skew, not order type (docs.avantisfi.com maker-and-taker;
+    # CONTRACT.md §12.11). Adding to the heavier side is taker; joining the
+    # lighter side is maker. Both legs take that tier. Read live
+    # `additionalPairParams2`, not docs or legacy `openFeeP`.
     fees = record.get("additionalPairParams2") or {}
-    required = ("openMakerFeeP", "closeMakerFeeP")
+    required = ("openMakerFeeP", "openTakerFeeP", "closeMakerFeeP", "closeTakerFeeP")
     if any(fees.get(k) is None for k in required):
         return _unavailable(base, side, notional_usd, symbol,
-                            f"Avantis did not return openMakerFeeP/closeMakerFeeP for {symbol}; "
+                            f"Avantis did not return open/close maker and taker fees for {symbol}; "
                             "refusing to default a missing fee to zero.")
     open_maker = Decimal(str(fees["openMakerFeeP"]))
+    open_taker = Decimal(str(fees["openTakerFeeP"]))
     close_maker = Decimal(str(fees["closeMakerFeeP"]))
+    close_taker = Decimal(str(fees["closeTakerFeeP"]))
+
+    coin_oi = record.get("coinOI") or {}
+    if coin_oi.get("long") is None or coin_oi.get("short") is None:
+        return _unavailable(base, side, notional_usd, symbol,
+                            f"Avantis did not return coinOI for {symbol}; "
+                            "cannot classify maker vs taker without live skew.")
+    long_oi = Decimal(str(coin_oi["long"]))
+    short_oi = Decimal(str(coin_oi["short"]))
 
     price = prices.get(pair_index)
     if price is None or price <= 0:
@@ -512,8 +558,13 @@ async def quote_hedge(
                             f"No live oracle price for {symbol}; cannot size the hedge.")
     size_coin = notional_usd / price
 
-    open_fee_bps = open_maker * _PCT_TO_BPS
-    close_fee_bps = close_maker * _PCT_TO_BPS
+    # Same live book and hedge side for both legs: the close is classified as
+    # another trade on that side of the book, not as an unwind against our own
+    # fill. A $10k short into a long-heavy book is maker open and maker close.
+    opening = classify_skew_fee(long_oi, short_oi, size_coin, side, open_maker, open_taker)
+    closing = classify_skew_fee(long_oi, short_oi, size_coin, side, close_maker, close_taker)
+    open_fee_bps = opening.fee_pct * _PCT_TO_BPS
+    close_fee_bps = closing.fee_pct * _PCT_TO_BPS
 
     margin_fee = record.get("marginFee") or {}
     borrow_8h = borrow_8h_bps_for_side(margin_fee, side)
@@ -540,8 +591,9 @@ async def quote_hedge(
                             f"${notional_usd:,.0f}; treating as not executable rather than "
                             "assuming zero spread.")
 
-    # Detected from live maker fields, not assetType (blank on 27 records).
-    promotional = (open_maker == 0 and close_maker == 0)
+    # Detected from the rates this quote actually uses, not assetType (blank
+    # on 27 records). Growth-mode RWA pairs sit at 0 on all four fields.
+    promotional = (open_fee_bps == 0 and close_fee_bps == 0)
 
     borrow_8h_effective = borrow_8h if _INCLUDE_MARGIN_FEE_IN_CARRY else Decimal(0)
 
@@ -561,23 +613,28 @@ async def quote_hedge(
             "durable. Spread, borrow and funding still apply."
         )
     else:
+        open_field = {
+            "maker": "openMakerFeeP",
+            "taker": "openTakerFeeP",
+            "mixed": "openMakerFeeP/openTakerFeeP blend",
+        }[opening.tier]
+        close_field = {
+            "maker": "closeMakerFeeP",
+            "taker": "closeTakerFeeP",
+            "mixed": "closeMakerFeeP/closeTakerFeeP blend",
+        }[closing.tier]
         note = (
-            f"Open fee {open_fee_bps} bps (openMakerFeeP), close fee {close_fee_bps} bps "
-            f"(closeMakerFeeP), both read live from the pair record: a "
-            f"{open_fee_bps + close_fee_bps} bps maker round trip (product decision "
-            "2026-08-30). ASSUMPTION: pricing both legs at the maker rate requires the "
-            "pair's OI skew to favour the close as well as the open. Avantis nets your "
-            "own size back out of your side at close, so against an unchanged book the "
-            "close would be charged taker instead"
+            f"Open fee {open_fee_bps} bps ({open_field}), close fee {close_fee_bps} bps "
+            f"({close_field}): a {open_fee_bps + close_fee_bps} bps {opening.tier} round "
+            f"trip. Avantis maker/taker is OI-skew, not order type: adding to the "
+            f"heavier (dominant) side is taker, joining the lighter side is maker; both "
+            f"legs of this {side} hedge take that tier"
         )
-        close_taker_ref = fees.get("closeTakerFeeP")
-        if close_taker_ref is not None:
-            taker_bps = Decimal(str(close_taker_ref)) * _PCT_TO_BPS
+        if opening.long_share_before is not None and opening.long_share_after is not None:
             note += (
-                f" ({taker_bps} bps, closeTakerFeeP), making the round trip "
-                f"{open_fee_bps + taker_bps} bps"
+                f". Live long share {opening.long_share_before} → {opening.long_share_after}"
             )
-        notes.append(note + ". This is the favourable end of the range, not a guaranteed rate.")
+        notes.append(note + ".")
     notes.append(
         f"Close fee applies to (notional + gross PnL), not fixed notional, so a winning "
         f"hedge pays more than {close_fee_bps} bps of notional and a losing one pays less."
@@ -620,7 +677,7 @@ async def quote_hedge(
         available=True,
         notes=" ".join(notes),
         base_asset=base,
-        fee_tier=("n/a" if promotional else "maker"),
+        fee_tier=("n/a" if promotional else opening.tier),
         promotional_zero_fee=promotional,
         borrow_rate_annual_pct=pct_per_hour_to_annual_pct(Decimal(str(margin_fee[side]))),
         funding_rate_annual_pct=-pct_per_hour_to_annual_pct(Decimal(str(funding_rate[side]))),

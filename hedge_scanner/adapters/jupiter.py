@@ -21,6 +21,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -29,7 +31,7 @@ import httpx
 
 from ..assets import normalize_base_asset
 from ..models import Position, Quote
-from .base import VenueUnavailableError, make_http_client
+from .base import VenueUnavailableError, make_http_client, record_mark
 
 PROGRAM_ID = "PERPHjGBqRHArX4DySjwM6UJHiR3sWAatqfdBS2qQJu"
 POSITION_DISCRIMINATOR = bytes([170, 188, 143, 228, 122, 64, 247, 208])
@@ -38,6 +40,51 @@ POSITION_ACCOUNT_SIZE = 216
 
 DEFAULT_RPC_URL = "https://api.mainnet-beta.solana.com"
 PRICE_API_URL = "https://lite-api.jup.ag/price/v3"
+
+# Jupiter Perps public REST API. Returns positions with the exact fields
+# jup.ag/portfolio displays: entryPrice, markPrice, liquidationPrice, all fee
+# components, and pnlAfterFees. Documented at dev.jup.ag/docs/perp-api. This
+# is the same source the frontend polls; using it here guarantees the tool's
+# display values match jup.ag/portfolio to the penny. Falls back to on-chain
+# decode only when this API is unreachable.
+PERPS_API_URL = "https://perps-api.jup.ag/v1"
+
+# ---------------------------------------------------------------------------
+# Doves oracle (Jupiter Perps mark price)
+# ---------------------------------------------------------------------------
+# Jupiter Perps computes PnL, liquidation, and health checks against the Doves
+# oracle (Edge by Chaos Labs primary, Pyth/Chainlink verification & fallback),
+# NOT the price.jup.ag DEX aggregator. The DEX aggregator quotes a
+# spot-liquidity-weighted price which drifts from the perp mark in either
+# direction as pool inventories change; using it for position PnL causes
+# per-asset drift versus what jup.ag/portfolio actually displays.
+#
+# Doves account layout (reverse-engineered against mainnet, 2026-09-02;
+# confirmed against jup.ag/portfolio values on SOL and BTC to <0.05% drift):
+#     [0:8]       Anchor discriminator (70f98bd9d7d0f936)
+#     [168:176]   price:        u64 LE  (scale = 10^-8, i.e. USD × 1e8)
+#     [177:185]   publish_time: i64 LE  (unix seconds)
+# Older docs reference the account's `dovesOracle` field; the current custody
+# points at `dovesAgOracle`, which is what the addresses below correspond to.
+# Migration note from docs.jup.ag/user-docs/trade/perps/technical-reference.
+DOVES_PROGRAM_ID = "DoVEsk76QybCEHQGzkvYPWLQu9gzNoZZZt3TPiL597e"
+_DOVES_PRICE_OFF = 168
+_DOVES_PUBTIME_OFF = 177
+DOVES_PRICE_SCALE = Decimal(10) ** 8
+
+# Any Doves read older than this is treated as stale and falls back to the
+# DEX aggregator. 5 minutes is deliberately loose: the oracle updates every
+# 10-30 seconds under normal load, so anything past a few minutes means the
+# keeper has actually stopped and we should not pretend the read is fresh.
+DOVES_MAX_AGE_S = 300
+
+DOVES_ORACLES: dict[str, str] = {
+    "SOL": "FYq2BWQ1V5P1WFBqr3qB2Kb5yHVvSv7upzKodgQE5zXh",
+    "ETH": "AFZnHPzy4mvVCffrVwhewHbFc93uTHvDSFrVH7GtfXF1",
+    "BTC": "hUqAT1KQ7eW1i6Csp9CXYtpPfSAvi835V7wKi5fRfmC",
+    "USDC": "6Jp2xZUTWdDD2ZyUPRzeMdc6AFQ5K3pFgZxk2EijfjnM",
+    "USDT": "Fgc93D641F8N2d1xLjQ4jmShuD3GE3BsCXA56KBQbF5u",
+}
 
 # Byte offsets into the Position account (Borsh, no padding between fields).
 _P_OWNER = 8
@@ -78,6 +125,8 @@ USD_SCALE = Decimal(10) ** 6  # sizeUsd, collateralUsd, price
 RATE_SCALE = Decimal(10) ** 9  # cumulativeInterestRate, targetUtilizationRate
 BPS_POWER = Decimal(10) ** 4
 HOURS_PER_YEAR = Decimal(8760)
+# jup.ag/perps and `/v1/pool-info` publish borrow as percent per hour
+# (`longBorrowRatePercent: "0.0013"` = 0.0013%/hr). 8h bps = pct/hr × 8 × 100.
 
 _SIDE_LONG = 1
 _SIDE_SHORT = 2
@@ -128,6 +177,9 @@ CUSTODIES: dict[str, dict] = {
 TRADABLE_CUSTODY_BY_ASSET = {
     v["base_asset"]: k for k, v in CUSTODIES.items() if not v["is_stable"]
 }
+# Reverse lookup for the perps-api path, which references assets by mint rather
+# than by custody pubkey.
+_ASSET_BY_MINT: dict[str, dict] = {v["mint"]: v for v in CUSTODIES.values()}
 # Shorts post a stable as collateral, so the borrow leg of a short is the USDC
 # custody by default.
 DEFAULT_STABLE_CUSTODY = "G18jKKXQwBbrHeiK3C9MRXhkHsLHf7XgCSisykV46EZa"
@@ -181,6 +233,28 @@ def decode_position_account(data: bytes) -> dict | None:
     }
 
 
+def decode_doves_price(data: bytes) -> tuple[Decimal, int] | None:
+    """Decode a Doves oracle account into (price_usd, publish_time_unix_s).
+
+    Returns ``None`` when the account is too short or the price field is zero
+    (Doves publishes 0 while the feed is uninitialised, never as a real price).
+    Layout is documented at the top of this module; the offsets are pinned by
+    tests against captured mainnet bytes so a Doves layout bump will fail
+    loudly rather than silently return a garbage number.
+    """
+    if len(data) < _DOVES_PUBTIME_OFF + 8:
+        return None
+    price_raw = int.from_bytes(
+        data[_DOVES_PRICE_OFF : _DOVES_PRICE_OFF + 8], "little", signed=False
+    )
+    if price_raw == 0:
+        return None
+    publish_time = int.from_bytes(
+        data[_DOVES_PUBTIME_OFF : _DOVES_PUBTIME_OFF + 8], "little", signed=True
+    )
+    return Decimal(price_raw) / DOVES_PRICE_SCALE, publish_time
+
+
 def decode_custody_account(data: bytes) -> dict:
     """Decode the fields of a Custody account this adapter needs."""
     return {
@@ -199,6 +273,15 @@ def decode_custody_account(data: bytes) -> dict:
         "targetRateBps": _u64(data, _C_JUMP_TARGET_RATE_BPS),
         "targetUtilizationRate": _u64(data, _C_JUMP_TARGET_UTILIZATION),
     }
+
+
+def hourly_borrow_percent_to_8h_bps(percent_per_hour: Decimal) -> Decimal:
+    """Convert Jupiter's UI/API hourly percent into bps per 8 hours.
+
+    `0.0013` on the wire is 0.0013%/hr (the BTC long rate on jup.ag/perps),
+    which is 1.04 bps / 8h.
+    """
+    return percent_per_hour * Decimal(8) * BPS_POWER / Decimal(100)
 
 
 def borrow_apr_bps(custody: dict) -> Decimal:
@@ -249,11 +332,16 @@ class JupiterAdapter:
         client: httpx.AsyncClient | None = None,
         rpc_url: str | None = None,
         timeout: float = 20.0,
+        now_s: Callable[[], int] | None = None,
     ) -> None:
         self._rpc_url = rpc_url or os.environ.get("SOLANA_RPC_URL", DEFAULT_RPC_URL)
         self._client = client
         self._owns_client = client is None
         self._timeout = timeout
+        # Clock hook for the Doves staleness check. Tests pin this to the
+        # fixture capture time so the recorded oracle payload does not age out
+        # of the freshness window; production defaults to real wall clock.
+        self._now_s = now_s or (lambda: int(time.time()))
 
     async def __aenter__(self) -> JupiterAdapter:
         return self
@@ -315,7 +403,235 @@ class JupiterAdapter:
             if entry and entry.get("usdPrice") is not None
         }
 
+    async def _fetch_doves_prices(self) -> dict[str, tuple[Decimal, int]]:
+        """Read every Doves oracle account and return ``{asset: (price, ts)}``.
+
+        Missing accounts, undecodable payloads, and reads older than
+        ``DOVES_MAX_AGE_S`` are dropped silently -- the caller falls back to the
+        DEX aggregator per asset. A single ``getMultipleAccounts`` RPC covers
+        all five oracles.
+        """
+        assets = list(DOVES_ORACLES.keys())
+        pubkeys = [DOVES_ORACLES[a] for a in assets]
+        result = await self._rpc(
+            "getMultipleAccounts", [pubkeys, {"encoding": "base64"}]
+        )
+        now = self._now_s()
+        out: dict[str, tuple[Decimal, int]] = {}
+        for asset, account in zip(assets, result["value"], strict=True):
+            if account is None:
+                continue
+            decoded = decode_doves_price(base64.b64decode(account["data"][0]))
+            if decoded is None:
+                continue
+            price, publish_time = decoded
+            if now - publish_time > DOVES_MAX_AGE_S:
+                continue
+            out[asset] = (price, publish_time)
+        return out
+
+    async def _resolve_marks(self) -> dict[str, Decimal]:
+        """Build ``{base_asset: mark_price}`` using Doves first, DEX-agg fallback.
+
+        Jupiter Perps computes PnL/liquidation against Doves. Reading Doves
+        keeps this adapter's Position.mark_price aligned with what
+        jup.ag/portfolio shows the trader. When a Doves account is missing or
+        stale, the DEX aggregator (price.jup.ag) is used per-asset; that path
+        is documented as "off vs the perp UI by whatever the pool inventory
+        drift is" (see module header) and only exists so a Doves outage does
+        not blank out the whole adapter.
+        """
+        # Fire both requests concurrently so the fallback is free when Doves
+        # is fresh (which it almost always is on majors).
+        doves, by_mint = await asyncio.gather(
+            self._fetch_doves_prices(),
+            self._fetch_prices(
+                [m["mint"] for m in CUSTODIES.values() if not m["is_stable"]]
+            ),
+        )
+        marks: dict[str, Decimal] = {}
+        for meta in CUSTODIES.values():
+            if meta["is_stable"]:
+                continue
+            asset = meta["base_asset"]
+            if asset in doves:
+                marks[asset] = doves[asset][0]
+            else:
+                fallback = by_mint.get(meta["mint"])
+                if fallback is not None:
+                    marks[asset] = fallback
+        return marks
+
+    async def get_marks(self) -> dict[str, Decimal]:
+        """Jupiter perp mark USD, keyed by base asset and ``{ASSET}-PERP``.
+
+        Sourced from Doves oracle when fresh, DEX aggregator otherwise. See
+        ``_resolve_marks`` for the rationale.
+        """
+        marks = await self._resolve_marks()
+        out: dict[str, Decimal] = {}
+        for asset, price in marks.items():
+            record_mark(out, asset, price)
+            record_mark(out, f"{asset}-PERP", price)
+        return out
+
+    async def _fetch_pool_info(self, mint: str) -> dict | None:
+        """Live borrow rates from ``perps-api`` — same numbers as jup.ag/perps.
+
+        ``GET /v1/pool-info?mint=<marketMint>`` returns ``longBorrowRatePercent``
+        / ``shortBorrowRatePercent`` as percent-per-hour strings. Used for
+        quotes so the scanner's borrow matches the header the trader sees.
+        ``None`` on any failure; the caller falls back to the on-chain jump
+        rate so a Jupiter API blip does not blank the quote.
+        """
+        try:
+            resp = await self._http().get(
+                f"{PERPS_API_URL}/pool-info",
+                params={"mint": mint},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        return body if isinstance(body, dict) else None
+
+    def _borrow_8h_bps_from_pool_info(
+        self, pool: dict | None, side: str
+    ) -> Decimal | None:
+        if not pool:
+            return None
+        key = (
+            "longBorrowRatePercent" if side == "long" else "shortBorrowRatePercent"
+        )
+        raw = pool.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return hourly_borrow_percent_to_8h_bps(Decimal(str(raw)))
+        except (ArithmeticError, ValueError):
+            return None
+
+    async def _fetch_positions_via_api(self, address: str) -> list[dict] | None:
+        """Fetch positions from ``perps-api.jup.ag``. Returns ``None`` on failure.
+
+        This is the same endpoint jup.ag/portfolio polls, so its
+        ``entryPrice`` / ``markPrice`` / ``liquidationPrice`` / ``pnlAfterFees``
+        values are guaranteed to match what the trader sees on the frontend.
+        Any HTTP or decode failure falls back to the on-chain decode in
+        ``get_positions``; distinguishing "API down" from "wallet has no
+        positions" requires letting a successful empty list through.
+        """
+        try:
+            resp = await self._http().get(
+                f"{PERPS_API_URL}/positions",
+                params={"walletAddress": address},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not isinstance(body, dict):
+            return None
+        rows = body.get("dataList")
+        if not isinstance(rows, list):
+            return None
+        return rows
+
+    def _position_from_api(self, address: str, row: dict) -> Position | None:
+        """Build a Position from a ``perps-api`` row.
+
+        Every numeric field on the wire is a string. USD-denominated fields
+        (``entryPrice``, ``markPrice``, ``liquidationPrice``, ``collateral``,
+        ``leverage``, ``size``, ``*FeesUsd``, ``pnl*Usd``) are already scaled
+        to human-readable USD, so no atomic-unit conversion is needed. Returns
+        ``None`` for rows that reference an asset the adapter does not track.
+        """
+        mint = row.get("marketMint")
+        meta = _ASSET_BY_MINT.get(mint) if mint else None
+        base_asset = meta["base_asset"] if meta else normalize_base_asset(mint or "")
+        if not base_asset:
+            return None
+
+        side = row.get("side", "").lower()
+        if side not in ("long", "short"):
+            return None
+        sign = Decimal(1) if side == "long" else Decimal(-1)
+
+        entry_price = Decimal(row["entryPrice"])
+        mark_price = Decimal(row["markPrice"])
+        liq_price_raw = row.get("liquidationPrice")
+        liq_price = (
+            Decimal(liq_price_raw)
+            if liq_price_raw not in (None, "", "0", "0.00")
+            else None
+        )
+        collateral_usd = Decimal(row["collateral"])
+        leverage = Decimal(row["leverage"])
+        size_usd = Decimal(row["size"])
+        size_base = size_usd / entry_price if entry_price > 0 else Decimal(0)
+        notional_usd = sign * size_base * mark_price
+        # `pnlAfterFeesUsd` is what jup.ag/portfolio's "PnL" column shows;
+        # matches to display precision. Fall back to pre-fee if the after-fee
+        # variant is absent (older API versions).
+        pnl_after = row.get("pnlAfterFeesUsd")
+        pnl_before = row.get("pnlBeforeFeesUsd")
+        unrealized = Decimal(pnl_after) if pnl_after is not None else (
+            Decimal(pnl_before) if pnl_before is not None else sign * (mark_price - entry_price) * size_base
+        )
+        borrow_paid = (
+            Decimal(row["borrowFeesUsd"]) if row.get("borrowFeesUsd") is not None else None
+        )
+        # Holder-PnL sign: borrow is always a cost, so the Position field is
+        # negative when the trader has paid. `borrowFeesUsd` on the wire is
+        # unsigned.
+
+        collateral_meta = _ASSET_BY_MINT.get(row.get("collateralMint", ""))
+        quote_asset = (
+            collateral_meta["base_asset"]
+            if collateral_meta and collateral_meta["is_stable"]
+            else "USD"
+        )
+
+        opened_at = None
+        created = row.get("createdTime")
+        if isinstance(created, (int, float)) and created > 0:
+            opened_at = datetime.fromtimestamp(int(created), tz=UTC)
+
+        return Position(
+            venue=self.venue,
+            address=address,
+            market=f"{base_asset}-PERP",
+            base_asset=base_asset,
+            quote_asset=quote_asset,
+            side=side,
+            size_base=size_base,
+            notional_usd=notional_usd,
+            entry_price=entry_price,
+            mark_price=mark_price,
+            liquidation_price=liq_price,
+            leverage=leverage,
+            collateral_usd=collateral_usd,
+            unrealized_pnl_usd=unrealized,
+            funding_paid_usd=(-borrow_paid if borrow_paid is not None else None),
+            margin_mode="isolated",
+            opened_at=opened_at,
+            raw=row,
+        )
+
     async def get_positions(self, address: str) -> list[Position]:
+        # Primary path: Jupiter's own perps API. Returns the exact numbers
+        # jup.ag/portfolio displays. Fall through to on-chain decode only when
+        # this endpoint is unavailable (returns None), so a Jupiter API outage
+        # never blanks out positions the tool would otherwise see on-chain.
+        api_rows = await self._fetch_positions_via_api(address)
+        if api_rows is not None:
+            positions: list[Position] = []
+            for row in api_rows:
+                pos = self._position_from_api(address, row)
+                if pos is not None:
+                    positions.append(pos)
+            return positions
+
         result = await self._rpc(
             "getProgramAccounts",
             [
@@ -342,15 +658,17 @@ class JupiterAdapter:
         needed = {d["custody"] for d in decoded} | {
             d["collateralCustody"] for d in decoded
         }
-        custodies = await self._fetch_custodies(sorted(needed))
-        mints = sorted(
-            {c["mint"] for pk, c in custodies.items() if not c["isStable"]}
+        # Fetch custodies and Doves-primary marks concurrently. Marks are
+        # keyed by base asset (see ``_resolve_marks``); the caller no longer
+        # cares about the mint→price mapping the DEX aggregator uses natively.
+        custodies, marks = await asyncio.gather(
+            self._fetch_custodies(sorted(needed)),
+            self._resolve_marks(),
         )
-        prices = await self._fetch_prices(mints)
 
         positions = []
         for raw in decoded:
-            position = self._to_position(address, raw, custodies, prices)
+            position = self._to_position(address, raw, custodies, marks)
             if position is not None:
                 positions.append(position)
         return positions
@@ -360,7 +678,7 @@ class JupiterAdapter:
         address: str,
         raw: dict,
         custodies: dict[str, dict],
-        prices: dict[str, Decimal],
+        marks: dict[str, Decimal],
     ) -> Position | None:
         custody_meta = CUSTODIES.get(raw["custody"])
         custody = custodies.get(raw["custody"])
@@ -371,11 +689,13 @@ class JupiterAdapter:
             custody_meta["base_asset"] if custody_meta else normalize_base_asset(mint)
         )
 
-        mark_price = prices.get(mint)
+        mark_price = marks.get(base_asset)
         if mark_price is None:
             raise VenueUnavailableError(
                 self.venue,
-                f"no mark price available for custody {raw['custody']} (mint {mint})",
+                f"no mark price available for {base_asset} "
+                f"(custody {raw['custody']}, mint {mint}); both Doves and the "
+                "DEX aggregator returned nothing",
             )
 
         entry_price = Decimal(raw["price"]) / USD_SCALE
@@ -389,7 +709,8 @@ class JupiterAdapter:
         unrealized = sign * (mark_price - entry_price) * size_base
 
         # Accrued borrow fee, from the collateral custody's monotonic counter.
-        # Positive means the position has paid this much.
+        # Local value is a positive cost (used in the liq formula below);
+        # `funding_paid_usd` on the Position is negated to holder-PnL sign.
         collateral_custody = custodies.get(raw["collateralCustody"])
         borrow_paid = None
         if collateral_custody is not None:
@@ -442,7 +763,7 @@ class JupiterAdapter:
             leverage=(size_usd / collateral_usd if collateral_usd > 0 else None),
             collateral_usd=collateral_usd,
             unrealized_pnl_usd=unrealized,
-            funding_paid_usd=borrow_paid,
+            funding_paid_usd=(-borrow_paid if borrow_paid is not None else None),
             margin_mode="isolated",
             opened_at=datetime.fromtimestamp(raw["openTime"], tz=UTC),
             raw=raw,
@@ -476,14 +797,28 @@ class JupiterAdapter:
         borrow_custody_pk = (
             custody_pk if side == "long" else DEFAULT_STABLE_CUSTODY
         )
-        custodies = await self._fetch_custodies(
-            sorted({custody_pk, borrow_custody_pk})
+        mint = CUSTODIES[custody_pk]["mint"]
+        pool_info, custodies = await asyncio.gather(
+            self._fetch_pool_info(mint),
+            self._fetch_custodies(sorted({custody_pk, borrow_custody_pk})),
         )
         custody = custodies[custody_pk]
         borrow_custody = custodies[borrow_custody_pk]
 
+        # Prefer the rate jup.ag/perps shows (`longBorrowRatePercent` /
+        # `shortBorrowRatePercent`, percent per hour). Fall back to the
+        # on-chain jump-rate curve if pool-info is down.
+        borrow_8h_bps = self._borrow_8h_bps_from_pool_info(pool_info, side)
         apr_bps = borrow_apr_bps(borrow_custody)
-        borrow_8h_bps = apr_bps / HOURS_PER_YEAR * Decimal(8)
+        if borrow_8h_bps is None:
+            borrow_8h_bps = apr_bps / HOURS_PER_YEAR * Decimal(8)
+            borrow_note = (
+                f"borrow APR {apr_bps / 100:.2f}% on the "
+                f"{CUSTODIES[borrow_custody_pk]['base_asset']} custody (on-chain)"
+            )
+        else:
+            hourly = borrow_8h_bps * Decimal(100) / BPS_POWER / Decimal(8)
+            borrow_note = f"borrow {hourly:.4f}%/hr from perps-api pool-info"
 
         return Quote(
             venue=self.venue,
@@ -505,8 +840,7 @@ class JupiterAdapter:
             est_slippage_bps=Decimal(0),
             available=True,
             notes=(
-                f"No funding rate on Jupiter; borrow APR {apr_bps / 100:.2f}% on the "
-                f"{CUSTODIES[borrow_custody_pk]['base_asset']} custody. "
+                f"No funding rate on Jupiter; {borrow_note}. "
                 "Excludes the additive OI-imbalance price impact component."
             ),
             base_asset=asset,

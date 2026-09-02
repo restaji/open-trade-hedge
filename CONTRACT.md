@@ -59,7 +59,7 @@ class Position:
     leverage: Decimal | None
     collateral_usd: Decimal | None
     unrealized_pnl_usd: Decimal | None
-    funding_paid_usd: Decimal | None   # cumulative, if the venue exposes it
+    funding_paid_usd: Decimal | None   # cumulative; + received, − paid
     margin_mode: str | None            # "cross" | "isolated"
     opened_at: datetime | None
     raw: dict                          # untouched venue payload, for debugging
@@ -209,11 +209,16 @@ Do not model Avantis with a fixed fee number.
    `classify_skew_fee()` over 200 skew/size combinations — zero both-legs-maker cases, every
    combination totalling exactly 5.500 bps, including the `mixed` blends.
 
-   **This paragraph states the mechanic, not what the tool quotes.** §12.8 supersedes it for
-   pricing: the ranker deliberately quotes a maker close, which is only reachable if the pair's
-   skew moves favourably while the hedge is held. Read (b) as the unchanged-book floor on
-   commission and §12.8 as the modelling decision layered on top. The mechanic itself is verified
-   and must not be edited away.
+   **This paragraph states the mechanic.** §12.8 briefly overrode it by quoting
+   both legs at maker regardless of skew; §12.11 restores this classification as
+   what the tool quotes: dominant side = taker, lighter side = maker, both legs
+   of a hedge at that tier. Read (b) as the unchanged-book *unwind* identity
+   (maker open mechanically closes as taker if you net your own size out), which
+   is still true of how Avantis charges a round trip against a frozen book. The
+   quote itself does not simulate that unwind — it prices the side of the book
+   the hedge sits on, matching
+   [Avantis maker-and-taker](https://docs.avantisfi.com/trading/fees/maker-and-taker).
+   The mechanic itself is verified and must not be edited away.
 
    The real variable that drives the Avantis cost differential is **spread**, which is directional,
    volatile (ranged from 1.2 to 5.6 bps for BTC within 20 minutes), and non-monotonic in size.
@@ -357,9 +362,11 @@ Do not exclude Jupiter from `funding_arb` scanning on the grounds of a zero; do 
 
 ### 10.4 `funding_paid_usd` sign convention
 
-Section 3 does not pin the sign. Ingestion normalizes to **positive = the position has paid**,
-negative = it has received, across all venues. On Jupiter this is accrued borrow fee since the
-position's last on-chain update, derived from the collateral custody's cumulative interest counter.
+Holder-PnL sign, same as `unrealized_pnl_usd` and `current_funding_rate_8h_bps`:
+**positive = the position has received, negative = it has paid** (a burden).
+On Jupiter this is accrued borrow fee since the position's last on-chain update,
+derived from the collateral custody's cumulative interest counter and negated
+(borrow is always a cost, so the field is ≤ 0).
 
 ### 10.5 Stack deviation: no `solana` / `solders`
 
@@ -765,6 +772,11 @@ Two contract-visible consequences:
 
 ### 12.8 CHANGED — both Avantis legs now price at the live maker rate (2026-08-30)
 
+> **SUPERSEDED 2026-09-02 by §12.11.** Always-maker pricing treated a dominant-side
+> hedge as maker. The ranker now classifies from live OI skew: lighter side =
+> maker both legs, heavier side = taker both legs. The rest of this subsection
+> is preserved as the history of the 2.0 bps maker-round-trip experiment.
+
 **Decision (user-directed, 2026-08-30).** `quote_hedge` prices *both* legs of an
 Avantis hedge at the pair's maker commission, read live from
 `additionalPairParams2`: `openMakerFeeP` for the open and `closeMakerFeeP` for
@@ -864,8 +876,8 @@ Consequences and the guardrails that come with them:
    or None) carries the CURRENT live funding rate the position is accruing,
    signed from the **position holder's perspective**: positive = the holder
    is currently receiving funding, negative = paying. Distinct from
-   ``funding_paid_usd``, which is cumulative history in the opposite sign
-   convention (positive = paid). ``None`` means the adapter did not supply a
+   ``funding_paid_usd``, which is cumulative history in the same sign
+   convention (positive = received, negative = paid). ``None`` means the adapter did not supply a
    live rate; §7 non-negotiable applies — a missing rate is never treated as
    zero.
 2. **Aggregation is notional-weighted.** ``NetExposure.weighted_current_funding_8h_bps``
@@ -907,18 +919,22 @@ Consequences and the guardrails that come with them:
 
 Not changed by this: §7's "never fabricate a fee" (a missing rate is still
 ``None``, never zero), §7.5.1's ranking-honesty rule (other venues rank the
-same), and §12.8's maker-rate pricing for the Avantis quote itself (the gate
-uses the same live rate the ranker already reads).
+same), and the Avantis quote's live commission (the gate uses the same live
+rate the ranker already reads; which tier that commission lands on is §12.11).
 
-### 12.9 CHANGED — Avantis hedge quotes now compute carry from funding only, ignoring `marginFee` (2026-08-31)
+### 12.9 CHANGED — Avantis `marginFee` is in carry again (2026-09-02)
 
-**Product decision: Avantis no longer charges `marginFee` on-chain even though
-the API metadata still publishes non-zero values.** Per the user (who trades
-this venue actively), Avantis has moved standard perps to a funding-only carry
-model on-chain but has not yet updated the `/data/v2/trading` payload to
-reflect it — `marginFee.<long|short>` is still populated with the pre-change
-rates. This tool now zeroes it out at Quote construction to match on-chain
-reality until the API catches up.
+**Current (2026-09-02, user-directed).** Do not drop `marginFee`. The
+avantisfi.com header **Net Rate (L/S) 24h** is `(fundingRate + marginFee) × 24`
+from `https://data.avantisfi.com/v2/trading` (identical JSON to
+`prod-api.avantisfi.com/data/v2/trading`). `_INCLUDE_MARGIN_FEE_IN_CARRY = True`.
+`AvantisQuote.borrow_rate_8h_bps` is live `marginFee.<side>` converted to
+bps/8h. Web Avantis 24h / Avantis APR / Net APR use holder-signed
+`fundingRate − marginFee`. Jupiter borrow stays out of Net APR (§12.12).
+
+**Was (2026-08-31).** The tool zeroed `marginFee` at Quote construction because
+the API still published non-zero rates after an on-chain funding-only shift.
+That override is reversed. Historical numbers and rationale below.
 
 Concretely, `hedge_venues/avantis.py` sets `borrow_rate_8h_bps = 0` on every
 `AvantisQuote` (standard and Upside), so the engine's `carry = borrow − funding`
@@ -964,8 +980,9 @@ would show up immediately in reconciliation.
 **Wire-level fix.** `hedge_venues/avantis.py` gains a module-level flag:
 
 ```python
-# See CONTRACT.md §12.9. Flip to True if Avantis re-enables marginFee on-chain.
-_INCLUDE_MARGIN_FEE_IN_CARRY = False
+# Include marginFee so Avantis 24h matches UI Net Rate (L/S) 24h.
+# Was False 2026-08-31 → 2026-09-02 (funding-only override). Now True.
+_INCLUDE_MARGIN_FEE_IN_CARRY = True
 ```
 
 Both `quote_hedge` and `quote_hedge_upside` compute `borrow_8h` from
@@ -994,26 +1011,176 @@ generically — which is now the "effective" value, not Avantis's raw.
 
 **When to reconsider.**
 
-- When Avantis eventually pushes an API update that zeroes `marginFee` on
-  standard pairs (matching the current Upside behaviour and matching what the
-  on-chain contract does today), the JSON will start reporting zero organically
-  and the flag becomes moot — no code change needed.
-- If a real Avantis position ever accrues a borrow charge on-chain (i.e., the
-  on-chain behaviour reverts), flip `_INCLUDE_MARGIN_FEE_IN_CARRY = True` in
-  `hedge_scanner/hedge_venues/avantis.py:97`. The delta between the two runs
-  is exactly the excluded `marginFee` component and matches the reconciled fee.
-- If the tool ever needs to price liquidation-risk math for a long-held
-  Avantis hedge, that math must read `marginFee.<side>` directly rather than
-  going through `Quote.borrow_rate_8h_bps`, because the health-ratio
-  computation would be about real accrued cost — and at that point re-verify
-  the on-chain rate first, since this section's assumption (marginFee is not
-  actually applied) is the reason for zeroing at the Quote layer.
+- If Avantis's API zeroes `marginFee` organically (matching Upside), quotes
+  already follow the JSON — no flag change.
+- If a real Avantis position ever *does not* accrue `marginFee` on-chain while
+  the API still publishes it, flip `_INCLUDE_MARGIN_FEE_IN_CARRY = False` in
+  `hedge_scanner/hedge_venues/avantis.py`. The delta is the `marginFee`
+  component. That was the 2026-08-31 override; it is not current policy.
+- Liquidation-risk math for a long-held Avantis hedge should read
+  `marginFee.<side>` the same way the Quote does (the field is live again).
 
 Not changed by this: §7's "never fabricate a fee" (a missing `marginFee` is
 still `None`, not zero — the zeroing here happens explicitly on a value the
-adapter did read successfully), §12.8's maker-rate decision (both legs still
-price at `openMakerFeeP` / `closeMakerFeeP`), and §12.5's paste-an-address
+adapter did read successfully), Avantis commission classification (§12.11,
+which superseded §12.8's always-maker decision), and §12.5's paste-an-address
 scope (this is a modelling choice, not a data source).
+
+### 12.10 CHANGED — live PnL marks are per-venue, not Ostium-for-everyone (2026-09-01)
+
+`GET /api/prices` used to return a flat `{BTC: ostium_last_trade, …}` map.
+The UI stamped that Ostium last-trade onto every open row, so a Hyperliquid
+or Pacifica BTC position's live PnL was computed off Ostium's book. That is
+the wrong number for a cross-venue hedge: the residual is `source_mark −
+hedge_mark`, not `ostium_mark − entry` on both legs.
+
+The payload is now nested `{venue: {market_or_canonical_asset: usd}}`.
+Each adapter's `get_marks()` (and Avantis `hedge_venues.avantis.get_marks`)
+reads that venue's own public mark feed. The UI looks up
+`prices[position.venue][position.market]` then `base_asset`; it never falls
+back to another venue. A venue that cannot serve a bulk mark (GRVT: ticker
+is per-instrument) is present as `{}` and the poll leaves the scan-time
+mark on that row.
+
+Contract-visible consequences:
+
+1. The `/api/prices` JSON shape is a breaking change for any external poller
+   that expected the flat Ostium map.
+2. HIP-3 Hyperliquid marks are keyed `xyz:BRENTOIL` (and setdefault onto
+   `BRENT`) so they cannot overwrite native-DEX `BTC`.
+3. Avantis is included even though it is not a position source, so a later
+   hedge-side mark comparison has the destination book in the same payload.
+
+Not changed by this: scan-time `Position.mark_price` (already venue-native),
+§12.6's `positionValue / szi` derivation, or the Avantis quote path.
+
+### 12.11 CHANGED — Avantis maker/taker is live OI-skew, not always-maker (2026-09-02)
+
+**Decision (user-directed, 2026-09-02).** Avantis maker vs taker is **not**
+order type, and it is not "always maker". A hedge that adds to the heavier
+(dominant) side of `coinOI` is a **taker**; a hedge that joins the lighter
+side is a **maker**. Both open and close of that hedge take the same tier.
+This is unique to Avantis in the venue set — GRVT / Pacifica / Ondo still
+decide maker/taker by resting vs crossing. Source:
+[Maker and Taker](https://docs.avantisfi.com/trading/fees/maker-and-taker).
+
+This supersedes §12.8, which priced every standard-perp hedge at
+`openMakerFeeP` + `closeMakerFeeP` (2.0 bps crypto) regardless of direction.
+That treated a dominant-side fill as a maker. Against the fixture BTC book
+(long-heavy), a long hedge is now **4.5 + 4.5 = 9.0 bps taker**, a short
+hedge remains **1.0 + 1.0 = 2.0 bps maker**.
+
+`quote_hedge` calls `classify_skew_fee()` against live `coinOI` for the hedge
+side, then classifies the close against the **same** book and side (not as an
+unwind that nets our own size out). Empty and exactly-balanced books still
+fall through to taker, matching the SDK. A size large enough to cross 0.5
+is `mixed` (size-weighted blend) on both legs.
+
+Consequences:
+
+1. **Required fields.** `openMakerFeeP`, `openTakerFeeP`, `closeMakerFeeP`,
+   `closeTakerFeeP`, and `coinOI.{long,short}` are all required. Missing any
+   returns `available=False` — never a fallback to the other tier, never a
+   silent zero (§7).
+2. **`fee_tier` is directional.** `"maker"` / `"taker"` / `"mixed"` describe
+   the round trip. Promotional 0 bps RWA still reports `"n/a"`.
+3. **`hedge-scanner fees` shows both tiers.** OPEN/CLOSE/RT columns are
+   `maker / taker`. JSON replaces `taker_close_round_trip_bps` with
+   `taker_round_trip_bps` (`openTakerFeeP + closeTakerFeeP`).
+4. **Upside Perps unaffected.** They still read `openTakerFeeP` /
+   `closeTakerFeeP` off the Upside pair record (§12.4).
+5. **Funding remains independent of skew** (§7.6(a)). A maker hedge is cheap
+   on commission; it is not automatically positive-carry.
+
+Unchanged: spread, the close-fee base
+(`notional + grossPnL`), and promotional RWA detection (all four commission
+fields sit at 0 together). `marginFee` is included in carry again (see §12.9 reversal 2026-09-02).
+
+### 12.12 CHANGED — web UI headlines net funding APR, not 24h all-in (2026-09-02)
+
+**Decision (user-directed, 2026-09-02).** The paste-an-address UI no longer
+headlines a 24-hour all-in hedge cost and no longer shows Avantis Upside.
+
+1. **Net APR** replaces the `Hedge 24h` column. It is Avantis **net** rate
+   (holder-signed `fundingRate − marginFee`, matching the UI
+   Net Rate (L/S) 24h) minus the other venue's funding, annualised
+   `bps/8h × 8760/8 / 100` = `bps/8h × 10.95`. Jupiter borrow is not in
+   this rate.
+2. **Earn 24h** is that net 8h rate over three periods on current notional
+   (`notional × net_8h_bps × 3 / 10_000`). Positive means the paired book
+   is paid to hold over the next day.
+3. **Even in** is how long that net, after Jupiter borrow, takes to repay
+   Avantis open fee, close fee, and both spread legs:
+   `cover_bps × 8 / (net_8h_bps − source_borrow_8h_bps)`. Jupiter's paying
+   rate is `longBorrowRatePercent` / `shortBorrowRatePercent` from
+   `GET /v1/pool-info?mint=` (the 0.0013%/hr header on jup.ag/perps).
+   `None` / "never" when that recoup rate is not a receive.
+4. **Avantis Upside is removed from the scan UI.** The scanner no longer
+   fetches `quote_upside_hedge` per row. CLI ranking and `quote_upside_hedge`
+   itself are unchanged (§12.4).
+5. **§7.5.3 still applies to the CLI.** Headline 24h ranking, sensitivity
+   table, and venue-crossover stay on the `scan` command.
+6. **Even-in box links out to Avantis trade.** Bottom of the box is
+   `Hedge on Avantis` → `https://www.avantisfi.com/trade?asset={BASE}-USD`,
+   with `{BASE}` taken from the row's Avantis market (`BTC/USD` → `BTC-USD`).
+
+### 12.13 CHANGED — liquidation price is read from the venue, not re-derived (2026-09-02)
+
+**Decision (user-directed, 2026-09-02).** Same principle as §12.10 for marks:
+the tool's `Position.liquidation_price` must be **the venue's own liq**, not a
+re-derivation. Every adapter is expected to read liq from the same source the
+venue's UI reads. A tool that publishes a "computed elsewhere" liq is
+guaranteed to drift from what the trader sees on the venue frontend the
+moment either side changes a formula, and the drift is silent.
+
+Audit result across the adapter set:
+
+| Venue | Source of `liquidation_price` | Path |
+|---|---|---|
+| Hyperliquid | `clearinghouseState.assetPositions[*].position.liquidationPx` | wire-canonical |
+| Pacifica | `positions[*].liquidation_price` | wire-canonical |
+| Jupiter Perps | `perps-api.jup.ag/v1/positions[*].liquidationPrice` (with on-chain decode as a fallback) | wire-canonical (primary), computed (fallback) |
+| Ostium | `_compute_liq_price` — pinned to the published formula, no venue endpoint exists | formula-canonical |
+| GRVT | account-scoped `mm_ratio` and margin math (auth-gated, not read today) | n/a for anonymous scans |
+
+Jupiter (this change):
+- `perps-api.jup.ag/v1/positions?walletAddress=<addr>` is the same endpoint
+  `jup.ag/portfolio` polls. It returns `entryPrice`, `markPrice`,
+  **`liquidationPrice`**, `leverage`, `collateral`, `pnlAfterFeesUsd`, and
+  full fee breakdown per position. `JupiterAdapter.get_positions()` now
+  tries this endpoint first (`_fetch_positions_via_api`) and returns
+  Position rows built entirely from it (`_position_from_api`). Values match
+  `jup.ag/portfolio` to display precision.
+- The on-chain decode path (`getProgramAccounts` + Doves marks +
+  `_to_position`) remains as the fallback. It runs only when the perps API
+  returns non-200 / invalid JSON / non-list `dataList`. An **empty** but
+  successful API response returns `[]` and never falls back — a wallet
+  with no positions must not be papered over by the fallback path
+  hallucinating from lingering zero-size accounts.
+- `get_marks()` is untouched (§12.10). Marks are still cross-venue via Doves
+  + DEX-aggregator, because the perps API is per-wallet.
+
+Ostium (audit only, no code change):
+- Ostium's subgraph `Trade` type stores only raw parameters (openPrice,
+  collateral, leverage, rollover accumulator, funding). No `liquidationPrice`
+  field, no `Position` object, no REST API to hit. The frontend and the
+  Python SDK both compute liq client-side.
+- The published formula (docs.ostium.com/traders/trading/liquidation) is:
+  `Threshold = 100% − (Leverage / MaxLevPair × 25%)`;
+  `Liq_long = Entry × (1 − Threshold/Leverage)`;
+  `Liq_short = Entry × (1 + Threshold/Leverage)`.
+  Accrued rollover shifts liq toward entry by `|fees|/collateral × Entry/Leverage`.
+  `OstiumAdapter._compute_liq_price` implements this verbatim.
+- `tests/test_ostium.py` pins every row of the docs' worked table (5x, 10x,
+  20x, 50x, 100x, 200x on max 200x) plus the fee-shift math. If Ostium ever
+  changes the 0.25 backstop coefficient, or moves to a nonlinear fee-shift,
+  those tests fail loudly and force a re-derivation with the new docs page
+  as the citation.
+
+Not changed by this: on-chain decode still exists for Jupiter (fallback),
+and Hyperliquid / Pacifica already read venue-canonical liq. The engine's
+liquidation-distance math (§7.13) still consumes `Position.liquidation_price`
+without caring which path produced it.
 
 ## 8. Stack
 

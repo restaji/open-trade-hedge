@@ -19,7 +19,7 @@ import httpx
 
 from ..assets import normalize_base_asset
 from ..models import Position, Quote
-from .base import VenueUnavailableError, make_http_client, walk_book
+from .base import VenueUnavailableError, make_http_client, record_mark, walk_book
 
 DEFAULT_BASE_URL = "https://api.pacifica.fi/api/v1"
 
@@ -104,6 +104,15 @@ class PacificaAdapter:
         rows = await self._get("/info/prices")
         return {row["symbol"]: row for row in rows}
 
+    async def get_marks(self) -> dict[str, Decimal]:
+        """Pacifica mark (fallback oracle), keyed by symbol and canonical base."""
+        rows = await self._prices_by_symbol()
+        out: dict[str, Decimal] = {}
+        for symbol, row in rows.items():
+            mark = _dec(row.get("mark")) or _dec(row.get("oracle"))
+            record_mark(out, symbol, mark)
+        return out
+
     def _to_position(
         self, address: str, row: dict, prices: dict[str, dict]
     ) -> Position | None:
@@ -174,7 +183,8 @@ class PacificaAdapter:
             leverage=leverage,
             collateral_usd=collateral_usd,
             unrealized_pnl_usd=unrealized,
-            # Docs: "Funding paid by this position since open". Positive = paid.
+            # Pacifica `funding` is already holder-PnL signed: negative = paid,
+            # positive = received. Pass through unchanged.
             funding_paid_usd=_dec(row.get("funding")),
             current_funding_rate_8h_bps=current_funding_8h_bps,
             margin_mode="isolated" if isolated else "cross",

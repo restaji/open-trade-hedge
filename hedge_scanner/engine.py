@@ -309,8 +309,9 @@ FEE_SCHEDULE: dict[str, VenueFeeSchedule] = {
         notes=(
             "Fees are LIVE-FETCHED per pair from prod-api.avantisfi.com; the numeric "
             "fields in this stub are zero placeholders and must not be shown as a "
-            "static schedule. The ranker prices both legs at the pair's live maker "
-            "rate (§12.8), which assumes a maker close; RWA pairs are 0/0/0/0 under a "
+            "static schedule. The ranker classifies each hedge as maker or taker "
+            "from live OI skew (§12.11): lighter side is maker, dominant side is "
+            "taker; both legs take that tier. RWA pairs are 0/0/0/0 under a "
             "revocable growth-mode promotion (§7.6.2). The closing fee is charged on "
             "notional PLUS gross PnL, so a winning hedge pays more to close than a "
             "flat-rate model shows."

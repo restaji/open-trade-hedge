@@ -39,7 +39,7 @@ import httpx
 
 from ..assets import normalize_base_asset
 from ..models import Position, Quote
-from .base import VenueUnavailableError, make_http_client
+from .base import VenueUnavailableError, make_http_client, record_mark
 
 SUBGRAPH_URL = "https://builder.prod.bedrock.ostium.io/v1/subgraph/gn"
 
@@ -398,6 +398,29 @@ class OstiumAdapter:
 
         # Negative = user paid out
         return -abs(accrued_usd)
+
+    # ------------------------------------------------------------------
+    # Marks
+    # ------------------------------------------------------------------
+
+    async def get_marks(self) -> dict[str, Decimal]:
+        """Ostium last-trade marks, keyed by ``from`` and ``from/to``."""
+        pairs = await self._get_pairs()
+        out: dict[str, Decimal] = {}
+        for pair in pairs.values():
+            from_sym = pair.get("from") or ""
+            to_sym = pair.get("to") or ""
+            raw_mark = _dec(pair.get("lastTradePrice"))
+            mark = (
+                raw_mark / PRICE_PRECISION
+                if raw_mark is not None and raw_mark > 0
+                else None
+            )
+            if from_sym:
+                record_mark(out, from_sym, mark)
+            if from_sym and to_sym:
+                record_mark(out, f"{from_sym}/{to_sym}", mark)
+        return out
 
     # ------------------------------------------------------------------
     # Quotes (with live overnight financing rate)

@@ -369,7 +369,7 @@ def scan(
 # Live Avantis fee snapshot for the `fees` command
 # --------------------------------------------------------------------------------------
 
-# Fees-command sample: BTC anchors the maker round trip (§12.8); RWA covers
+# Fees-command sample: BTC anchors the maker/taker split; RWA covers
 # metal / FX / commodity so growth-mode 0 bps is visible (§7.6.2).
 _AVANTIS_FEES_CRYPTO_SAMPLE: tuple[str, ...] = ("BTC", "ETH", "SOL")
 _AVANTIS_FEES_RWA_SAMPLE: tuple[str, ...] = ("XAU", "EUR", "BRENT")
@@ -415,13 +415,13 @@ class AvantisLiveFeeRow:
 
     @property
     def maker_round_trip_bps(self) -> Decimal:
-        """Round trip the ranker prices: maker open + maker close (§12.8)."""
+        """Lighter-side round trip: maker open + maker close."""
         return self.open_maker_bps + self.close_maker_bps
 
     @property
-    def taker_close_round_trip_bps(self) -> Decimal:
-        """Same open, but the taker close an unchanged book would charge (§12.8)."""
-        return self.open_maker_bps + self.close_taker_bps
+    def taker_round_trip_bps(self) -> Decimal:
+        """Dominant-side round trip: taker open + taker close."""
+        return self.open_taker_bps + self.close_taker_bps
 
 
 @dataclass(frozen=True)
@@ -641,14 +641,13 @@ def _add_avantis_live_row(table: Any, schedule: Any, live: AvantisLiveFeeSnapsho
             "no crypto pair in live snapshot",
         )
         return
-    # The engine prices both legs of an Avantis hedge at the pair's maker rate
-    # (§12.8), so the OPEN/CLOSE columns show the two maker fields. The taker
-    # close an unchanged book would charge is shown in the detail block below.
+    # Ranker selects maker or taker from live OI skew (§12.11). OPEN/CLOSE/RT
+    # show the maker / taker pair; MAKER is the lighter-side open rate.
     table.add_row(
         f"{schedule.display_name} ({row.symbol})",
-        _fmt_bps(row.open_maker_bps),
-        _fmt_bps(row.close_maker_bps),
-        _fmt_bps(row.maker_round_trip_bps),
+        f"{_fmt_bps(row.open_maker_bps)} / {_fmt_bps(row.open_taker_bps)}",
+        f"{_fmt_bps(row.close_maker_bps)} / {_fmt_bps(row.close_taker_bps)}",
+        f"{_fmt_bps(row.maker_round_trip_bps)} / {_fmt_bps(row.taker_round_trip_bps)}",
         _fmt_bps(row.open_maker_bps),
         "yes" if schedule.hedge_destination else "no",
         "yes" if schedule.position_readable else "no",
@@ -703,9 +702,8 @@ def _render_avantis_live_block(console: Any, live: AvantisLiveFeeSnapshot) -> No
     console.print(
         Padding(
             Text(
-                "crypto pairs (maker round trip per §12.8: openMakerFeeP + "
-                "closeMakerFeeP, both live; the taker close an unchanged book "
-                "would charge is shown alongside):",
+                "crypto pairs (maker vs taker from live OI skew per §12.11: "
+                "lighter side = maker open+close, dominant side = taker open+close):",
                 style="dim",
             ),
             (0, 0, 0, 4),
@@ -723,13 +721,12 @@ def _render_avantis_live_block(console: Any, live: AvantisLiveFeeSnapshot) -> No
         console.print(
             Padding(
                 Text(
-                    f"- {row.symbol}: openMakerFeeP={_fmt_bps(row.open_maker_bps)} bps, "
-                    f"closeMakerFeeP={_fmt_bps(row.close_maker_bps)} bps -> "
-                    f"round trip {_fmt_bps(row.maker_round_trip_bps)} bps "
-                    f"(taker close would make it "
-                    f"{_fmt_bps(row.taker_close_round_trip_bps)} bps; "
-                    f"openTakerFeeP={_fmt_bps(row.open_taker_bps)}, "
-                    f"closeTakerFeeP={_fmt_bps(row.close_taker_bps)})",
+                    f"- {row.symbol}: maker {_fmt_bps(row.open_maker_bps)}/"
+                    f"{_fmt_bps(row.close_maker_bps)} bps "
+                    f"(RT {_fmt_bps(row.maker_round_trip_bps)}); "
+                    f"taker {_fmt_bps(row.open_taker_bps)}/"
+                    f"{_fmt_bps(row.close_taker_bps)} bps "
+                    f"(RT {_fmt_bps(row.taker_round_trip_bps)})",
                     style="dim",
                 ),
                 (0, 0, 0, 6),
@@ -771,7 +768,7 @@ def _render_avantis_live_block(console: Any, live: AvantisLiveFeeSnapshot) -> No
         Padding(
             Text(
                 "Closing fee is charged on (notional + gross PnL), so a winning "
-                "hedge pays more than the closeMakerFeeP rate applied to notional.",
+                "hedge pays more than the close-leg rate applied to notional.",
                 style="dim",
             ),
             (0, 0, 0, 4),
@@ -844,7 +841,7 @@ def _avantis_json_payload(schedule: Any, live: AvantisLiveFeeSnapshot) -> dict[s
             "openTakerFeeP_bps": str(row.open_taker_bps),
             "closeMakerFeeP_bps": str(row.close_maker_bps),
             "maker_round_trip_bps": str(row.maker_round_trip_bps),
-            "taker_close_round_trip_bps": str(row.taker_close_round_trip_bps),
+            "taker_round_trip_bps": str(row.taker_round_trip_bps),
             "promotional_zero": row.promotional_zero,
         }
 
@@ -855,10 +852,10 @@ def _avantis_json_payload(schedule: Any, live: AvantisLiveFeeSnapshot) -> dict[s
         "source_url": live.source_url,
         "fetched_at": live.fetched_at.isoformat(),
         "hedge_model": (
-            "both legs priced at the pair's live maker rate per CONTRACT.md "
-            "§12.8 (openMakerFeeP + closeMakerFeeP); this ASSUMES a maker close, "
-            "which an unchanged book would charge as taker instead -- see "
-            "taker_close_round_trip_bps for that alternative"
+            "maker vs taker from live OI skew per CONTRACT.md §12.11: joining "
+            "the lighter side is maker (openMakerFeeP + closeMakerFeeP), adding "
+            "to the heavier side is taker (openTakerFeeP + closeTakerFeeP); both "
+            "legs of a hedge take that tier"
         ),
         "crypto_pairs": [_row(r) for r in live.crypto_rows],
         "rwa_pairs": [_row(r) for r in live.rwa_rows],

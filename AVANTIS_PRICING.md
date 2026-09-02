@@ -33,40 +33,33 @@ what the UI shows. Note the SDK's own docstring claims this route is "not servin
 
 | `Quote` field | Avantis source | Transform |
 |---|---|---|
-| `taker_fee_bps` | `additionalPairParams2.openMakerFeeP` (see below) | `× 100` (percent → bps) |
-| `close_fee_bps` | `.closeMakerFeeP` (see below) | `× 100` (percent → bps) |
+| `taker_fee_bps` | `openMakerFeeP` **or** `openTakerFeeP`, selected by live `coinOI` via `classify_skew_fee()` | `× 100` (percent → bps) |
+| `close_fee_bps` | `closeMakerFeeP` **or** `closeTakerFeeP`, **same tier as the open** | `× 100` |
 | `price_impact_bps` | `POST /risk/v2/spread`, `isOpen=true` | `/1e10 × 100` |
 | `est_slippage_bps` | `POST /risk/v2/spread`, `isOpen=false` | same. Avantis has no orderbook slippage distinct from spread, so the two spread legs are mapped to the two contract fields — summing them gives the true round-trip spread under `CONTRACT.md` §6 |
 | `funding_rate_8h_bps` | `fundingRate.{long,short}` | `× 8 × 100`, then **sign flipped** (§4) |
-| `borrow_rate_8h_bps` | `marginFee.{long,short}` | `× 8 × 100`, absolute value (always a cost) |
+| `borrow_rate_8h_bps` | `marginFee.{long,short}` | `× 8 × 100`, absolute value (always a cost). Included in carry so Avantis 24h matches the UI Net Rate `(fundingRate + marginFee)×24` (`CONTRACT.md` §12.9, restored 2026-09-02). |
 | `available` / `notes` | `isPairListed`, `closeOnlyMode`, `minLevPosUSDC`, `feed.attributes.isOpen` | §6 |
 | `base_asset` | caller's normalized base | `CONTRACT.md` §9 addition |
 
-**Maker open + maker close, both live (product decision 2026-08-30, `CONTRACT.md` §12.8).**
-Both legs price at the pair's maker commission, read off the live pair record per invocation:
-`openMakerFeeP` for the open, `closeMakerFeeP` for the close. On crypto that is a **2.0 bps**
-round trip at current rates. Neither number is hardcoded.
+**Maker vs taker from live OI skew (product decision 2026-09-02, `CONTRACT.md` §12.11).**
+Joining the lighter side of `coinOI` is maker; adding to the heavier (dominant) side
+is taker. Both legs of the hedge take that tier, read off the live pair record per
+invocation. On crypto at current rates that is a **2.0 bps** maker round trip or a
+**9.0 bps** taker round trip. Neither number is hardcoded. This is unique to Avantis
+in the venue set — other venues still decide maker/taker by order type.
 
-This deliberately quotes the favourable end of the range, and §12.8 records why that is a
-choice rather than a fact. Against an **unchanged** book a round trip always pays one maker leg
-and one taker leg (5.5 bps on crypto), because Avantis nets our own size back out of our side at
-close and undoes the skew improvement the open was paid for — verified by sweeping
-`classify_skew_fee()` over 200 skew/size combinations with zero both-legs-maker results. A maker
-close is only reachable if the pair's skew drifts in our favour while the hedge is held, which is
-real but unknowable at quote time. Every non-promotional quote therefore carries a note labelling
-the round trip an ASSUMPTION and stating the taker-close alternative, read from `closeTakerFeeP`
-**for disclosure only, never for pricing**.
-
-`classify_skew_fee()` remains in the module as the SDK-faithful Decimal port of
-`maker_or_taker_fee_p` and is still pinned by its unit tests (§3 below); it is the ground truth
-for how Avantis actually charges. `quote_hedge` does not call it. Refusal semantics are unchanged
-— a missing `openMakerFeeP` **or** `closeMakerFeeP` returns `available=False` with a reason; we
-never fall back to another tier or to zero (§7 non-negotiables, §6 below).
+`classify_skew_fee()` is the SDK-faithful Decimal port of `maker_or_taker_fee_p` and
+is what `quote_hedge` calls. Empty and balanced books fall through to taker; a size
+that crosses 0.5 is a size-weighted `mixed` blend on both legs. A missing
+`openMakerFeeP` / `openTakerFeeP` / `closeMakerFeeP` / `closeTakerFeeP` **or**
+`coinOI` returns `available=False` with a reason; we never fall back to the other
+tier or to zero (§7 non-negotiables, §6 below).
 
 RWA pairs under growth mode still price at 0 bps: all four `additionalPairParams2` commission
 fields sit at 0 together on those pairs, so the promotional check
-`open_maker == 0 and close_maker == 0` is equivalent to checking all four and correctly preserves
-the promotional flag.
+`open_fee_bps == 0 and close_fee_bps == 0` (after classification) is equivalent to checking
+all four and correctly preserves the promotional flag.
 
 Deliberately **not** used: legacy `openFeeP` / `closeFeeP` / `skewEqParams`, and the SDK's
 `get_opening_fee()` which reads them. Their live decile table is degenerate (`a = 0` on every
@@ -78,26 +71,25 @@ it was not edited): `fee_tier`, `promotional_zero_fee`, `borrow_rate_annual_pct`
 `min_position_usd`, `max_gain_pct_of_collateral`, `profit_share_schedule`, `pair_index`,
 `close_fee_base`. `isinstance(q, Quote)` holds, so the engine consumes it unchanged.
 
-## 3. Maker vs taker — the underlying mechanic (retained but bypassed by the hedge quote)
+## 3. Maker vs taker — OI-skew, not order type
 
 On Avantis, maker/taker is **not** order type. A leg that moves the pair's *coin-denominated* long
 share toward 0.5 is a **maker** (1.0 bps crypto); one that moves it away is a **taker** (4.5 bps);
 one large enough to cross 0.5 pays a size-weighted **mixed** blend. `classify_skew_fee()` is a
 Decimal port of `maker_or_taker_fee_p` in `avantis_trader_sdk/compute/fees.py`, including its two
-fall-through cases (empty book and an exactly balanced book both price as taker). It is retained,
-unit-tested, and still exported.
+fall-through cases (empty book and an exactly balanced book both price as taker).
 
-**`quote_hedge` intentionally does not invoke `classify_skew_fee`.** The product decision
-(2026-08-30, §2 above, `CONTRACT.md` §12.8) prices both legs at the pair's maker rate. The
-classifier would instead return one maker leg and one taker leg for the same round trip
-(`CONTRACT.md` §7.6(b)), which is what the venue charges against an unchanged book — so the
-divergence between this module and the classifier is deliberate and is disclosed in the quote
-notes rather than reconciled in code.
+**`quote_hedge` invokes `classify_skew_fee` twice** — once with the open maker/taker rates, once
+with the close rates — against the **same** live `coinOI` and hedge side. Both legs therefore
+land on the same tier: a short into a long-heavy book is maker open **and** maker close; a long
+into that book is taker open **and** taker close. This matches the docs ("0.001% open & close"
+on the lighter side, "0.045% open & close" on the heavier side) rather than simulating the
+unwind that would net our own size out of our side.
 
-The classifier is kept in place because (a) its unit tests still pin the SDK-faithful mechanic,
-which is the ground truth for how Avantis charges, and (b) any future caller that needs the
-per-leg tier (e.g. a research script or a reintroduction of skew-based routing) can consume it
-without a re-port. Deleting it would leak product coupling into the pricing layer.
+The classifier's `reduce_side=True` path is retained and unit-tested; it is the ground truth for
+how Avantis charges a close against a frozen book (maker open mechanically closes as taker).
+`quote_hedge` does not pass `reduce_side`. That is a modelling choice recorded in §12.11, not a
+claim that the unwind identity is false.
 
 **Documentation conflict, recorded in code.** The docs contradict themselves on the maker rate:
 `maker-and-taker.md` says `0.001%` (0.1 bps — a missing decimal place),
@@ -106,13 +98,10 @@ the maker and taker labels **swapped** ("4.5 bps - Maker / 1 bps - Taker"). Live
 `openMakerFeeP = 0.01` percent settles it at **1.0 bps maker / 4.5 bps taker**. The module reads the
 live fields and never the docs.
 
-**Close fee — modelled, not API-verified.** The close is classified against the book *including* our
-own leg, then nets our size back out. Consequence: at unchanged external skew, a skew-improving open
-unwinds as a skew-worsening close, so mechanically **maker open implies taker close** (and vice
-versa) — a 5.5 bps crypto round trip. `quote_hedge` nevertheless quotes `closeMakerFeeP` for a
-2.0 bps round trip per §12.8, which is the outcome when external skew drifts favourably during the
-hold. Avantis re-evaluates against actual skew at close time, so the quoted figure is the
-favourable end of a 2.0–5.5 bps range. Flagged in `notes` on every quote.
+**Close fee — same tier as the open, re-evaluated by Avantis at fill time.** The quote prices
+close at the close-leg rate of the open's tier. Avantis will re-classify the close against the
+book at close time, so a skew flip during the hold can change the close tier. Flagged in `notes`
+via the live long-share before/after on every non-promotional quote.
 
 **Close fee base.** Avantis charges close on `notional + grossPnL`, not fixed notional, so `close_fee_bps`
 is a *rate* that is only notional-equivalent at flat price. `close_fee_usd(rate, notional, gross_pnl)`
@@ -155,12 +144,13 @@ recommended.
 
 ## 6. Refusals, promotional rates, constraints
 
-- **Never default to zero.** A missing `openMakerFeeP`, `marginFee.{side}`, `fundingRate.{side}`,
-  `coinOI` or oracle price returns `available=False` with a reason. A spread engine refusal (403 =
+- **Never default to zero.** A missing `openMakerFeeP`, `openTakerFeeP`, `closeMakerFeeP`,
+  `closeTakerFeeP`, `coinOI`, `marginFee.{side}`, `fundingRate.{side}` or oracle price returns
+  `available=False` with a reason. A spread engine refusal (403 =
   blocked, 404 = no computable spread) or a literal zero from it is treated as "do not execute",
   never as a free fill.
-- **Promotional 0 bps** is detected by all four commission fields reading 0 **in live data**, not
-  from an asset-class list — 27 live records carry a blank `assetType` and mix crypto (FET, SHIB,
+- **Promotional 0 bps** is detected by the classified open and close rates both reading 0
+  **in live data**, not from an asset-class list — 27 live records carry a blank `assetType` and mix crypto (FET, SHIB,
   PEPE) in with RWAs (USOILSPOT, USD/TRY), so classifying by asset class would misprice them. When
   detected, `promotional_zero_fee=True` and `notes` states the rate is revocable growth-mode pricing
   tied to unstated RWA OI milestones. Spread, borrow and funding still apply and are still charged.
@@ -211,11 +201,12 @@ minimums; `maxGainP`; Upside `marginFee = 0` and the 25/20/10/5 `pnlFees` bands;
 directional and non-monotonic in size; `limitOrderFeeP = 0` and `twapFee = 0`.
 
 **Assumed / modelled, and labelled as such:**
-1. **Close-fee maker/taker** — the *rate* is live (`closeMakerFeeP`), but the *tier* for a future
-   close cannot be. Per §12.8 the close is priced maker, which the mechanic in §3 says requires
-   external skew to drift in our favour during the hold; against an unchanged book it would be
-   taker. This is the one assumption in this file that moves cost **down**, so it is the one to
-   re-examine first when auditing a narrow Avantis win.
+1. **Close-fee maker/taker** — the *rate* is live (`closeMakerFeeP` / `closeTakerFeeP`), but the
+   *tier* for a future close cannot be. Per §12.11 the close is priced at the same OI-skew tier
+   as the open (the side of the book the hedge sits on). Avantis re-classifies at close time, so
+   a skew flip during the hold can change the close tier. The SDK unwind identity (§7.6(b)) —
+   maker open closing as taker against a frozen book — is still true of the venue and is pinned
+   by `classify_skew_fee(..., reduce_side=True)` tests; it is not what `quote_hedge` emits.
 2. **Close fee on notional** — the rate is applied to notional for a flat-price estimate; the real
    base is `notional + grossPnL`.
 3. **No fee discounts applied.** AVNT staking (−5% to −30%) and referral (−5%) discounts are

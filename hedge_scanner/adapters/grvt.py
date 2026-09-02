@@ -25,7 +25,12 @@ import httpx
 
 from ..assets import normalize_base_asset
 from ..models import Position, Quote
-from .base import VenueRequiresAuthError, VenueUnavailableError, make_http_client, walk_book
+from .base import (
+    VenueRequiresAuthError,
+    VenueUnavailableError,
+    make_http_client,
+    walk_book,
+)
 
 DEFAULT_MARKET_DATA_URL = "https://market-data.grvt.io/full/v1"
 DEFAULT_TRADING_URL = "https://trades.grvt.io/full/v1"
@@ -114,6 +119,15 @@ class GrvtAdapter:
 
     async def get_positions(self, address: str) -> list[Position]:
         raise VenueRequiresAuthError(self.venue, AUTH_MESSAGE)
+
+    async def get_marks(self) -> dict[str, Decimal]:
+        """GRVT has no bulk mark feed; ticker/mini are per-instrument.
+
+        Polling ``/ticker`` once per perp on a 5s UI timer would be hundreds
+        of requests. Return empty rather than stamp another venue's mark
+        onto a GRVT row, or fabricate a subset of majors.
+        """
+        return {}
 
     async def _instrument_for(self, asset: str) -> str | None:
         instruments = await self._post("/all_instruments", {"is_active": True})

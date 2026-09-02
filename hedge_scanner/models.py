@@ -32,14 +32,13 @@ class Position:
     leverage: Decimal | None = None
     collateral_usd: Decimal | None = None
     unrealized_pnl_usd: Decimal | None = None
-    funding_paid_usd: Decimal | None = None   # cumulative, if the venue exposes it
+    funding_paid_usd: Decimal | None = None   # cumulative; + received, − paid
     # CONTRACT.md section 12.9 addition: the CURRENT funding rate this
     # position is accruing right now, signed from the POSITION HOLDER'S
     # perspective: positive = holder is currently RECEIVING funding,
     # negative = holder is currently PAYING. `None` when the adapter cannot
     # supply a live rate (e.g. Jupiter has no funding mechanism at all).
-    # Distinct from `funding_paid_usd`, which is cumulative history in the
-    # opposite sign convention (positive = paid).
+    # Same sign as `funding_paid_usd` (cumulative history): + received, − paid.
     current_funding_rate_8h_bps: Decimal | None = None
     margin_mode: str | None = None            # "cross" | "isolated"
     opened_at: datetime | None = None

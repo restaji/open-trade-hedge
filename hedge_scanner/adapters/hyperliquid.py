@@ -33,7 +33,7 @@ import httpx
 
 from ..assets import normalize_base_asset
 from ..models import Position, Quote
-from .base import VenueUnavailableError, make_http_client
+from .base import VenueUnavailableError, make_http_client, record_mark
 
 DEFAULT_API_URL = "https://api.hyperliquid.xyz/info"
 
@@ -187,9 +187,9 @@ class HyperliquidAdapter:
             return []
         return data.get("assetPositions") or []
 
-    async def _all_mids_safe(self) -> dict[str, Decimal]:
+    async def _all_mids_safe(self, dex: str | None = None) -> dict[str, Decimal]:
         try:
-            return await self._all_mids()
+            return await self._all_mids(dex)
         except VenueUnavailableError:
             return {}
 
@@ -242,6 +242,7 @@ class HyperliquidAdapter:
             leverage_val = _dec(leverage_info)
 
         cum_funding = pos.get("cumFunding", {})
+        # `sinceOpen` is already holder-PnL signed (negative = paid).
         funding_since_open = _dec(cum_funding.get("sinceOpen"))
 
         # Preserve the native <dex>:<coin> namespace when the position came
@@ -427,8 +428,43 @@ class HyperliquidAdapter:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _all_mids(self) -> dict[str, Decimal]:
-        data = await self._post({"type": "allMids"})
+    async def get_marks(self) -> dict[str, Decimal]:
+        """Hyperliquid mids, native DEX first then HIP-3 ``<dex>:<coin>``.
+
+        Spot/oracle internals (``@`` / ``#`` keys) are dropped. HIP-3
+        marks are indexed under the namespaced market so they cannot
+        overwrite a native-DEX coin of the same underlying.
+        """
+        out: dict[str, Decimal] = {}
+        native = await self._all_mids_safe()
+        for coin, mid in native.items():
+            if not coin or coin[0] in "@#":
+                continue
+            record_mark(out, coin, mid)
+
+        dexs = await self._list_sub_dexs()
+        if not dexs:
+            return out
+        results = await asyncio.gather(
+            *(self._all_mids_safe(dex) for dex in dexs),
+            return_exceptions=True,
+        )
+        for dex, mids in zip(dexs, results):
+            if not isinstance(mids, dict):
+                continue
+            for coin, mid in mids.items():
+                if not coin or coin[0] in "@#":
+                    continue
+                record_mark(out, f"{dex}:{coin}", mid)
+        return out
+
+    async def _all_mids(self, dex: str | None = None) -> dict[str, Decimal]:
+        payload: dict[str, object] = {"type": "allMids"}
+        if dex:
+            payload["dex"] = dex
+        data = await self._post(payload)
+        if not isinstance(data, dict):
+            return {}
         out: dict[str, Decimal] = {}
         for coin, mid_str in data.items():
             mid = _dec(mid_str)

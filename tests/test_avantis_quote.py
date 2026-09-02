@@ -396,15 +396,11 @@ def test_rwa_quote_is_flagged_promotional_and_revocable(offline, snapshot):
     assert "PROMOTIONAL" in quote.notes
     assert "REVOCABLE" in quote.notes
     # Zero commission must not be mistaken for a free hedge.
-    #
-    # §12.9: the Quote's borrow_rate_8h_bps is now 0 by policy, but Avantis's
-    # underlying marginFee is still non-zero (that's why we care about excluding
-    # it). Both facts matter for the "not free" claim.
-    assert quote.borrow_rate_8h_bps == Decimal(0)
     raw_margin = avantis.borrow_8h_bps_for_side(
         _pair(snapshot, "XAU/USD")["marginFee"], "short"
     )
     assert raw_margin > 0, "Avantis still publishes a real marginFee for XAU"
+    assert quote.borrow_rate_8h_bps == raw_margin
     assert quote.price_impact_bps > 0
     assert quote.all_in_cost_bps > 0
 
@@ -412,8 +408,8 @@ def test_rwa_quote_is_flagged_promotional_and_revocable(offline, snapshot):
 def test_crypto_quote_is_not_flagged_promotional(offline):
     quote = asyncio.run(avantis.quote_hedge("BTC", "short", Decimal("10000"), Decimal("24")))
     assert quote.promotional_zero_fee is False
-    # CONTRACT.md §12.8: both legs read the pair's live maker rate --
-    # openMakerFeeP (1.0 bps on crypto) and closeMakerFeeP (1.0 bps).
+    # Fixture BTC is long-heavy, so a short joins the lighter side → maker.
+    assert quote.fee_tier == "maker"
     assert quote.taker_fee_bps == Decimal("1.000")
     assert quote.close_fee_bps == Decimal("1.000")
 
@@ -484,9 +480,8 @@ def test_invalid_side_is_rejected(offline):
 
 
 def test_missing_fee_field_yields_unavailable_not_zero(monkeypatch, snapshot, prices, offline):
-    """Both legs read the maker fields (§12.8), so a missing openMakerFeeP -- or a
-    missing closeMakerFeeP -- must refuse to quote rather than default to zero or
-    fall back to the taker rate.
+    """A missing maker or taker field must refuse rather than default to zero or
+    fall back to the other tier. Classification needs all four rates.
     """
     stripped = json.loads(json.dumps(snapshot, default=str))
     for record in stripped["pairInfos"].values():
@@ -500,7 +495,24 @@ def test_missing_fee_field_yields_unavailable_not_zero(monkeypatch, snapshot, pr
     monkeypatch.setattr(avantis, "fetch_trading_snapshot", fake_snapshot)
     quote = asyncio.run(avantis.quote_hedge("BTC", "short", Decimal("10000"), Decimal("24")))
     assert quote.available is False
-    assert "openMakerFeeP/closeMakerFeeP" in quote.notes
+    assert "open/close maker and taker fees" in quote.notes
+
+
+def test_missing_coin_oi_yields_unavailable_not_guessed_tier(monkeypatch, snapshot, prices, offline):
+    """Without live coinOI the hedge cannot be classified maker vs taker."""
+    stripped = json.loads(json.dumps(snapshot, default=str))
+    for record in stripped["pairInfos"].values():
+        if record.get("from") == "BTC" and record.get("to") == "USD":
+            record.pop("coinOI", None)
+    reparsed = avantis._loads_exact(json.dumps(stripped))
+
+    async def fake_snapshot(client=None):
+        return reparsed
+
+    monkeypatch.setattr(avantis, "fetch_trading_snapshot", fake_snapshot)
+    quote = asyncio.run(avantis.quote_hedge("BTC", "short", Decimal("10000"), Decimal("24")))
+    assert quote.available is False
+    assert "coinOI" in quote.notes
 
 
 def test_unquotable_spread_yields_unavailable_not_zero(monkeypatch, offline):
@@ -563,30 +575,33 @@ def test_spread_is_non_monotonic_in_size(spread_quotes):
 # --------------------------------------------------------------------------
 
 
-def test_both_directions_price_both_legs_maker(offline):
-    """Both long and short read openMakerFeeP + closeMakerFeeP (2.0 bps round trip).
+def test_quote_hedge_classifies_open_and_close_from_live_skew(offline):
+    """Fixture BTC is long-heavy: short = maker both legs, long = taker both legs.
 
-    Product decision 2026-08-30 (CONTRACT.md §12.8): both legs price at the
-    pair's live maker commission, so the round trip is direction-independent.
+    CONTRACT.md §12.11: Avantis maker/taker is OI-skew. Adding to the dominant
+    side is taker (4.5 + 4.5 bps); joining the lighter side is maker (1.0 + 1.0).
     Neither rate is hardcoded -- both come off `additionalPairParams2`.
     """
     short = asyncio.run(avantis.quote_hedge("BTC", "short", Decimal("10000"), Decimal("24")))
     long = asyncio.run(avantis.quote_hedge("BTC", "long", Decimal("10000"), Decimal("24")))
     assert short.fee_tier == "maker"
-    assert long.fee_tier == "maker"
+    assert long.fee_tier == "taker"
     assert short.taker_fee_bps == Decimal("1.000")
-    assert long.taker_fee_bps == Decimal("1.000")
     assert short.close_fee_bps == Decimal("1.000")
-    assert long.close_fee_bps == Decimal("1.000")
+    assert long.taker_fee_bps == Decimal("4.500")
+    assert long.close_fee_bps == Decimal("4.500")
     assert short.taker_fee_bps + short.close_fee_bps == Decimal("2.000")
-    assert long.taker_fee_bps + long.close_fee_bps == Decimal("2.000")
+    assert long.taker_fee_bps + long.close_fee_bps == Decimal("9.000")
+    assert "OI-skew" in short.notes
+    assert "openMakerFeeP" in short.notes
+    assert "openTakerFeeP" in long.notes
 
 
 def test_maker_round_trip_is_read_from_the_pair_record_not_hardcoded(snapshot, prices, monkeypatch, offline):
-    """The 2.0 bps round trip must track the live record, not a constant.
+    """The maker-side round trip must track the live record, not a constant.
 
-    Doubling both maker fields on the snapshot must double the quoted round
-    trip. A hardcoded 1.0/1.0 would leave it unchanged and fail here.
+    Doubling both maker fields on the snapshot must double the quoted short
+    (maker) round trip. A hardcoded 1.0/1.0 would leave it unchanged and fail here.
     """
     bumped = json.loads(json.dumps(snapshot, default=str))
     for record in bumped["pairInfos"].values():
@@ -601,22 +616,50 @@ def test_maker_round_trip_is_read_from_the_pair_record_not_hardcoded(snapshot, p
 
     monkeypatch.setattr(avantis, "fetch_trading_snapshot", fake_snapshot)
     quote = asyncio.run(avantis.quote_hedge("BTC", "short", Decimal("10000"), Decimal("24")))
+    assert quote.fee_tier == "maker"
     assert quote.taker_fee_bps == Decimal("2.000")
     assert quote.close_fee_bps == Decimal("3.000")
 
 
-def test_positive_carry_is_reported_only_when_funding_actually_pays(offline):
-    """Fee tier is always maker; funding direction is an independent input.
+def test_taker_round_trip_is_read_from_the_pair_record_not_hardcoded(snapshot, prices, monkeypatch, offline):
+    """The taker-side round trip must track the live taker fields.
 
-    The maker-hedge decision fixes commission; it does not imply positive carry.
-    CONTRACT.md §7.6(a) is explicit that funding is anchored to external
-    venues on crypto and is NOT a consequence of the maker/taker classification.
+    A long into the fixture's long-heavy BTC book is taker; bumping only the
+    taker fields must move that quote and leave a maker short unchanged.
+    """
+    bumped = json.loads(json.dumps(snapshot, default=str))
+    for record in bumped["pairInfos"].values():
+        if record.get("from") == "BTC" and record.get("to") == "USD":
+            fees = record["additionalPairParams2"]
+            fees["openTakerFeeP"] = "0.08"
+            fees["closeTakerFeeP"] = "0.09"
+    reparsed = avantis._loads_exact(json.dumps(bumped))
+
+    async def fake_snapshot(client=None):
+        return reparsed
+
+    monkeypatch.setattr(avantis, "fetch_trading_snapshot", fake_snapshot)
+    long = asyncio.run(avantis.quote_hedge("BTC", "long", Decimal("10000"), Decimal("24")))
+    short = asyncio.run(avantis.quote_hedge("BTC", "short", Decimal("10000"), Decimal("24")))
+    assert long.fee_tier == "taker"
+    assert long.taker_fee_bps == Decimal("8.000")
+    assert long.close_fee_bps == Decimal("9.000")
+    assert short.fee_tier == "maker"
+    assert short.taker_fee_bps == Decimal("1.000")
+    assert short.close_fee_bps == Decimal("1.000")
+
+
+def test_positive_carry_is_reported_only_when_funding_actually_pays(offline):
+    """Fee tier and funding direction are independent inputs.
+
+    CONTRACT.md §7.6(a): funding is anchored to external venues on crypto and
+    is NOT a consequence of the maker/taker classification.
     """
     quote = asyncio.run(avantis.quote_hedge("BTC", "short", Decimal("10000"), Decimal("24")))
     assert quote.fee_tier == "maker"
     assert quote.funding_rate_8h_bps < 0
     other = asyncio.run(avantis.quote_hedge("BTC", "long", Decimal("10000"), Decimal("24")))
-    assert other.fee_tier == "maker"
+    assert other.fee_tier == "taker"
     assert other.funding_rate_8h_bps > 0
 
 
@@ -633,29 +676,20 @@ def test_all_in_cost_matches_the_contract_formula(offline):
     assert quote.all_in_cost_usd == expected * Decimal("10000") / Decimal("10000")
 
 
-def test_carry_excludes_margin_fee_by_policy(offline, snapshot):
-    """§12.9: Avantis hedge quotes must compute carry from funding alone.
+def test_carry_includes_margin_fee_matching_ui_net_rate(offline, snapshot):
+    """Avantis Quote.borrow_rate_8h_bps is live marginFee (UI Net Rate 24h).
 
-    Regression guard for the product decision to zero out `marginFee` in the
-    Quote (Avantis stopped applying it on-chain but the API still reports it).
-    Three invariants:
-      1. `Quote.borrow_rate_8h_bps == 0` (what the engine actually reads).
-      2. Avantis's raw `marginFee.<side>` is still non-zero in the API fixture
-         (so we know the exclusion isn't hiding a data-missing bug).
-      3. The excluded rate is surfaced in the notes text so the transition-period
-         reconciliation is transparent.
-    Flipping `_INCLUDE_MARGIN_FEE_IN_CARRY` back to True would fail this test.
+    The header Net Rate (L/S) 24h is (fundingRate + marginFee) × 24. We do not
+    drop marginFee. Carry = borrow − funding.
     """
     quote = asyncio.run(avantis.quote_hedge("BTC", "short", Decimal("10000"), Decimal("24")))
-    assert quote.borrow_rate_8h_bps == Decimal(0)
     raw = avantis.borrow_8h_bps_for_side(_pair(snapshot, "BTC/USD")["marginFee"], "short")
-    assert raw > 0, "Avantis's fixture still publishes non-zero marginFee.short"
-    assert "EXCLUDED per §12.9" in quote.notes
-    assert str(raw) in quote.notes  # the excluded rate must be visible to the user
-
-    # And the engine's carry math on the returned Quote must reduce to -funding:
+    assert raw > 0
+    assert quote.borrow_rate_8h_bps == raw
+    assert "EXCLUDED per §12.9" not in quote.notes
+    assert f"Borrow {raw} bps/8h" in quote.notes
     carry_8h = quote.borrow_rate_8h_bps - quote.funding_rate_8h_bps
-    assert carry_8h == -quote.funding_rate_8h_bps
+    assert carry_8h == raw - quote.funding_rate_8h_bps
 
 
 def test_quote_conforms_to_the_canonical_schema(offline):
@@ -675,11 +709,8 @@ def test_carry_scales_with_horizon(offline):
     """Carry component must scale linearly with hold time (both signs).
 
     Historically this test asserted "cost grows with hold" on BTC long, which
-    happened to be true under Avantis's borrow+funding model because borrow rent
-    dominated the tiny received funding. Under §12.9 (funding-only), the same
-    BTC long leg is a net receiver, so total cost DROPS with hold. The
-    invariant the test actually cares about -- carry is linear in horizon --
-    is direction-agnostic and holds under both regimes.
+    happened to be true when borrow rent dominated tiny received funding.
+    The invariant is that carry is linear in horizon, regardless of sign.
     """
     short_hold = asyncio.run(avantis.quote_hedge("BTC", "long", Decimal("10000"), Decimal("8")))
     long_hold = asyncio.run(avantis.quote_hedge("BTC", "long", Decimal("10000"), Decimal("720")))
@@ -708,24 +739,19 @@ def test_close_fee_base_is_notional_plus_pnl(offline):
 
 
 def test_a_hedge_can_be_expensive_and_the_quote_says_so(offline):
-    """No Avantis bias: a 2.0 bps commission does not make the hedge cheap.
+    """No Avantis bias: taker commission plus spread still leaves the hedge dear.
 
-    Commission is direction-independent under §12.8, so spread + carry is what
-    makes any given hedge expensive or cheap -- and the all-in cost must exceed
-    the commission by enough that the quote cannot be read as near-free.
+    Fixture BTC is long-heavy, so a long hedge is taker (9.0 bps commission).
+    All-in must exceed that commission so the quote cannot be read as near-free.
     """
     quote = asyncio.run(avantis.quote_hedge("BTC", "long", Decimal("10000"), Decimal("24")))
     assert quote.available is True
-    assert quote.fee_tier == "maker"
-    # 2.0 bps commission, plus positive spread and (for this direction)
-    # positive borrow.
+    assert quote.fee_tier == "taker"
+    assert quote.taker_fee_bps + quote.close_fee_bps == Decimal("9.000")
     assert quote.all_in_cost_bps > quote.taker_fee_bps + quote.close_fee_bps
-    assert "openMakerFeeP" in quote.notes
-    assert "closeMakerFeeP" in quote.notes
-    # §12.8 point 2: the taker-close alternative must be disclosed, so the
-    # 2.0 bps figure is never presented as guaranteed.
-    assert "ASSUMPTION" in quote.notes
+    assert "openTakerFeeP" in quote.notes
     assert "closeTakerFeeP" in quote.notes
+    assert "dominant" in quote.notes
     assert quote.funding_rate_8h_bps > 0
     assert quote.all_in_cost_bps > quote.taker_fee_bps
 
@@ -858,30 +884,44 @@ def test_snapshot_is_cached_within_ttl(monkeypatch, snapshot):
     reason="set AVANTIS_LIVE_TESTS=1 to hit the production Avantis API",
 )
 def test_live_btc_quote_is_internally_consistent():
-    """Live consistency check under the maker round trip (CONTRACT.md §12.8).
+    """Live consistency check under OI-skew classification (CONTRACT.md §12.11).
 
-    Both directions price both legs at the pair's live maker rate, so both must
-    report ``fee_tier == "maker"`` and 1.0 bps open + 1.0 bps close on crypto at
-    current rates. The old assertion that the two legs classify differently
-    belonged to the live-skew path that ``classify_skew_fee`` implements for its
-    own tests but ``quote_hedge`` no longer invokes.
+    Each direction is maker or taker from live coinOI. Crypto maker is 1.0 bps
+    open + 1.0 close; taker is 4.5 + 4.5. The two sides of a skewed book must
+    not both land on the same tier.
     """
     avantis.clear_caches()
     quote = asyncio.run(avantis.quote_hedge("BTC", "short", Decimal("10000"), Decimal("24")))
     assert quote is not None and quote.available is True
-    assert quote.fee_tier == "maker"
-    assert quote.taker_fee_bps == Decimal("1.00")
-    assert quote.close_fee_bps == Decimal("1.00")
+    assert quote.fee_tier in {"maker", "taker", "mixed"}
+    if quote.fee_tier == "maker":
+        assert quote.taker_fee_bps == Decimal("1.00")
+        assert quote.close_fee_bps == Decimal("1.00")
+    elif quote.fee_tier == "taker":
+        assert quote.taker_fee_bps == Decimal("4.50")
+        assert quote.close_fee_bps == Decimal("4.50")
     assert quote.price_impact_bps > 0 and quote.est_slippage_bps > 0
-    # §12.9: Quote's borrow is 0 by policy; the raw marginFee is still non-zero
-    # (surfaced in notes only). Both invariants matter.
-    assert quote.borrow_rate_8h_bps == Decimal(0)
-    assert "EXCLUDED per §12.9" in quote.notes
-    assert "marginFee" in quote.notes
+    # marginFee is in carry so Avantis 24h matches UI Net Rate (L/S) 24h.
+    assert quote.borrow_rate_8h_bps > 0
+    assert "EXCLUDED per §12.9" not in quote.notes
+    assert "Borrow " in quote.notes
     long_leg = asyncio.run(avantis.quote_hedge("BTC", "long", Decimal("10000"), Decimal("24")))
-    assert long_leg.fee_tier == "maker"
-    assert long_leg.taker_fee_bps == Decimal("1.00")
-    assert long_leg.close_fee_bps == Decimal("1.00")
+    assert long_leg.fee_tier in {"maker", "taker", "mixed"}
+    if quote.fee_tier != "mixed" and long_leg.fee_tier != "mixed":
+        assert {quote.fee_tier, long_leg.fee_tier} == {"maker", "taker"}
     # At most one side receives. Both-zero is a real live state (observed on BTC
     # 2026-08-19), so it is permitted; both-positive would be a sign bug.
     assert not (quote.funding_rate_8h_bps > 0 and long_leg.funding_rate_8h_bps > 0)
+
+
+async def test_get_marks_indexes_standard_perp_ahead_of_upside(offline, snapshot, prices):
+    marks = await avantis.get_marks()
+    btc_idx = next(
+        int(key)
+        for key, record in snapshot["pairInfos"].items()
+        if record.get("from") == "BTC" and record.get("to") == "USD"
+    )
+    assert marks["BTC"] == prices[btc_idx]
+    assert marks["BTC/USD"] == prices[btc_idx]
+    assert "BTC_UPSIDE" in marks
+    assert marks["ETH"] == prices[0]

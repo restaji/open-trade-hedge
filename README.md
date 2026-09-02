@@ -51,7 +51,7 @@ serves the paste-an-address UI at `/` and the JSON API under `/api`.
 | `GET` | `/` | — | Web UI |
 | `GET` | `/api/health` | — | Liveness. Does not hit venues |
 | `GET` | `/docs` | — | Interactive Swagger UI (generated from the app) |
-| `GET` | `/api/prices` | — | Ostium mark prices (the UI polls this) |
+| `GET` | `/api/prices` | — | Per-venue marks `{venue: {asset: usd}}` (the UI polls this) |
 | `GET` | `/api/scan` | `?addresses=0x…` (repeat or comma-separate) | Positions + Avantis hedge quotes |
 | `POST` | `/api/scan` | `{"addresses": ["0x…", "SolanaPubkey"]}` | Same payload as GET |
 
@@ -225,9 +225,11 @@ output, not the request. Kinds: `auth_required`, `unavailable`,
 - **Pacifica returns negative liquidation prices** for cross positions the rest
   of the account collateralizes away. Those surface as `None`, with the raw value
   preserved in `Position.raw`.
-- **`funding_paid_usd` is positive when the position has paid.** Consistent
-  across venues. On Jupiter it is accrued borrow fee since the position's last
-  update, derived from the collateral custody's cumulative interest counter.
+- **`funding_paid_usd` is negative when the position has paid, positive when
+  it has received.** Holder-PnL sign, consistent across venues. On Jupiter it
+  is accrued borrow fee (always a cost, so always ≤ 0) since the position's
+  last update, derived from the collateral custody's cumulative interest
+  counter.
 - **Quotes go `available=False` rather than reporting zero slippage** when the
   visible orderbook cannot absorb the requested size. A zero would make a thin
   venue look free and could win a hedge ranking it should lose. At $5M notional

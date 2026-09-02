@@ -5,7 +5,7 @@ Run:  cd hedge-scanner && uv run python -m hedge_scanner.web
 Serves:
   GET  /            → single-page app (HTML embedded below)
   GET  /api/health  → liveness probe
-  GET  /api/prices  → Ostium mark prices (UI poll)
+  GET  /api/prices  → per-venue mark prices (UI poll)
   GET  /api/scan    → ?addresses=<addr>[,<addr>…]
   POST /api/scan    → {addresses: [str]} → positions + hedge opportunities
 """
@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from hedge_scanner import portfolio
 from hedge_scanner.adapters import (
+    ADAPTER_CLASSES,
     GrvtAdapter,
     HyperliquidAdapter,
     JupiterAdapter,
@@ -33,9 +34,8 @@ from hedge_scanner.adapters import (
     PacificaAdapter,
 )
 from hedge_scanner.adapters.base import make_http_client
-from hedge_scanner.adapters.ostium import PRICE_PRECISION
 from hedge_scanner.assets import normalize_base_asset
-from hedge_scanner.engine import FEE_SCHEDULE, format_horizon, hedge_cost
+from hedge_scanner.engine import FEE_SCHEDULE, format_horizon
 from hedge_scanner.hedge_venues import avantis
 from hedge_scanner.liquidation import (
     LIQUIDATION_SPECS,
@@ -79,8 +79,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# CONTRACT.md section 7.5.3 — headline numbers default to 24h and must be labeled.
+# CONTRACT.md section 7.5.3 — CLI ranking still defaults to 24h. The web UI
+# headlines net APR / 24h earn from funding, with Avantis marginFee included
+# so the Avantis 24h line matches the UI Net Rate (L/S) 24h.
 HORIZON_HOURS = Decimal(24)
+_HOURS_PER_YEAR = Decimal(8760)
+_HOURS_PER_8H = Decimal(8)
+_APR_PER_8H_BPS = _HOURS_PER_YEAR / _HOURS_PER_8H / Decimal(100)  # 10.95
+_BPS_DENOM = Decimal(10_000)
+_PERIODS_PER_24H = HORIZON_HOURS / _HOURS_PER_8H  # 3
+
+
+def apr_pct_from_8h_bps(bps_8h: Decimal) -> Decimal:
+    """Convert a signed bps-per-8h rate to a simple annualised percent."""
+    return bps_8h * _APR_PER_8H_BPS
+
+
+def hedge_funding_spread(
+    source_funding_8h_bps: Decimal,
+    hedge_funding_8h_bps: Decimal,
+    notional_usd: Decimal,
+    cover_bps: Decimal = Decimal(0),
+    source_borrow_8h_bps: Decimal = Decimal(0),
+    hedge_borrow_8h_bps: Decimal = Decimal(0),
+) -> dict[str, Decimal | None]:
+    """Net of keeping the source position and opening the Avantis hedge.
+
+    Source funding is holder-signed (positive = receive). Avantis hedge
+    funding is the same. Avantis ``marginFee`` is a cost (``hedge_borrow``)
+    so the Avantis 24h matches the UI Net Rate: (fundingRate + marginFee)×24.
+    Jupiter borrow is not in Net APR; it only lengthens even-in via
+    ``source_borrow_8h_bps``.
+    """
+    hedge_net = hedge_funding_8h_bps - hedge_borrow_8h_bps
+    net_8h = source_funding_8h_bps + hedge_net
+    recoup_8h = net_8h - source_borrow_8h_bps
+    source_apr = apr_pct_from_8h_bps(source_funding_8h_bps)
+    hedge_apr = apr_pct_from_8h_bps(hedge_net)
+    if recoup_8h > 0:
+        breakeven: Decimal | None = cover_bps * _HOURS_PER_8H / recoup_8h
+    else:
+        breakeven = None
+    return {
+        "source_apr_pct": source_apr,
+        "hedge_apr_pct": hedge_apr,
+        "net_apr_pct": source_apr + hedge_apr,
+        "net_8h_bps": net_8h,
+        "earn_usd_24h": notional_usd * net_8h * _PERIODS_PER_24H / _BPS_DENOM,
+        "cover_bps": cover_bps,
+        "cover_usd": notional_usd * cover_bps / _BPS_DENOM,
+        "breakeven_hours": breakeven,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -208,18 +257,9 @@ async def _enrich_avantis(
     pos: Any,
     hedge_side: str,
     notional: float,
-    mark: float,
-    lev: float,
     client: httpx.AsyncClient,
 ) -> None:
-    """Populate the Avantis columns on `entry` in place.
-
-    Runs one Avantis quote (~1.4s of network I/O for a fresh pair) and mutates
-    `entry`. Safe to call concurrently for many positions on a shared client —
-    `quote_hedge`'s two per-scan reads (`fetch_trading_snapshot`, `fetch_prices`)
-    are TTL-cached, so parallel callers only duplicate the two per-position
-    `fetch_spread_bps` legs, which is what we want.
-    """
+    """Populate Avantis funding on ``entry``, plus hours to cover fees and spread."""
     try:
         quote = await avantis.quote_hedge(
             pos.base_asset, hedge_side,
@@ -245,107 +285,36 @@ async def _enrich_avantis(
         )
         return
 
-    # Single source of truth for the all-in number: the engine's own cost model,
-    # not a formula re-derived in the browser.
-    cost = hedge_cost(
-        quote,
-        horizon_hours=HORIZON_HOURS,
-        notional_usd=Decimal(str(notional)),
+    # Funding drives the hedge. Fees + both spread legs are the hurdle that
+    # funding has to repay — not a ranking input.
+    cover_bps = (
+        quote.taker_fee_bps
+        + quote.close_fee_bps
+        + quote.price_impact_bps
+        + quote.est_slippage_bps
     )
     entry["avantis_quote"] = {
         "market": quote.market,
         "side": hedge_side,
-        "open_fee_bps": _d(quote.taker_fee_bps),
-        "close_fee_bps": _d(quote.close_fee_bps),
         "funding_rate_8h_bps": _d(quote.funding_rate_8h_bps),
         "borrow_rate_8h_bps": _d(quote.borrow_rate_8h_bps),
+        "fee_tier": getattr(quote, "fee_tier", None),
+        "open_fee_bps": _d(quote.taker_fee_bps),
+        "close_fee_bps": _d(quote.close_fee_bps),
         "spread_bps": _d(quote.price_impact_bps + quote.est_slippage_bps),
-        "round_trip_bps": _d(cost.round_trip_fee_bps),
-        "carry_bps_8h": _d(cost.carry_cost_bps_per_8h),
-        "carry_bps": _d(cost.carry_cost_bps),
-        "total_bps": _d(cost.total_bps),
-        "total_usd": _d(cost.total_usd),
-        "positive_carry": cost.positive_carry,
-        "breakeven_hours": _d(cost.breakeven_hours),
-        "fee_schedule_unverified": cost.fee_schedule_unverified,
-        "notes": quote.notes,
     }
 
-    avantis_spec = LIQUIDATION_SPECS.get("avantis")
-    if avantis_spec and mark > 0 and lev > 0:
-        av_risk = compute_liquidation_risk(
-            "avantis", hedge_side,
-            Decimal(str(mark)), Decimal(str(lev)),
+    sc = entry.get("source_carry") or {}
+    if sc.get("funding_8h_bps") is not None:
+        spread = hedge_funding_spread(
+            Decimal(str(sc["funding_8h_bps"])),
+            quote.funding_rate_8h_bps,
             Decimal(str(notional)),
-            fees_pct=quote.taker_fee_bps / Decimal(100),
-            spec=avantis_spec,
+            cover_bps=cover_bps,
+            source_borrow_8h_bps=Decimal(str(sc.get("borrow_8h_bps") or 0)),
+            hedge_borrow_8h_bps=Decimal(str(quote.borrow_rate_8h_bps or 0)),
         )
-        if av_risk:
-            entry["avantis_liq"] = {
-                "liq_price": _d(av_risk.liq_price),
-                "distance_pct": _d(av_risk.distance_pct),
-                "penalty_usd": _d(av_risk.penalty_usd),
-                "penalty_bps": _d(av_risk.penalty_bps),
-                "cross_margin_risk": "position_only",
-                "model": "health_ratio",
-            }
-
-
-async def _enrich_upside(
-    entry: dict[str, Any],
-    pos: Any,
-    hedge_side: str,
-    notional: float,
-    client: httpx.AsyncClient,
-) -> None:
-    """Populate the Avantis (Upside) columns on `entry` in place.
-
-    Upside Perps price a fundamentally different risk shape from the standard
-    perp (CONTRACT.md §7.6): zero commission and borrow, profit-share instead.
-    The pane surfaces both quotes so the user can compare the unconditional
-    spread + funding cost of Upside against the standard perp, alongside the
-    contingent profit-share obligation on a winning close. Runs in parallel
-    with the standard Avantis quote on a shared client.
-    """
-    try:
-        quote = await avantis.quote_upside_hedge(
-            pos.base_asset, hedge_side,
-            Decimal(str(notional)), client=client,
-        )
-    except Exception as exc:
-        entry["upside_unavailable"] = (
-            f"Avantis Upside quote request failed ({exc.__class__.__name__})."
-        )
-        return
-
-    if quote is None:
-        # Base asset has no Upside pair (crypto majors only).
-        entry["upside_unavailable"] = (
-            f"Avantis does not list an Upside Perp for {pos.base_asset}."
-        )
-        return
-
-    if not quote.available:
-        entry["upside_unavailable"] = (
-            quote.notes or "Avantis Upside returned no usable quote for this size."
-        )
-        return
-
-    schedule = getattr(quote, "profit_share_schedule", None) or []
-    entry["upside_quote"] = {
-        "venue": quote.venue,
-        "market": quote.market,
-        "side": hedge_side,
-        "open_fee_bps": _d(quote.taker_fee_bps),
-        "close_fee_bps": _d(quote.close_fee_bps),
-        "funding_rate_8h_bps": _d(quote.funding_rate_8h_bps),
-        "borrow_rate_8h_bps": _d(quote.borrow_rate_8h_bps),
-        "spread_bps": _d(quote.price_impact_bps + quote.est_slippage_bps),
-        "profit_share_schedule": [
-            [_d(lower), _d(share)] for lower, share in schedule
-        ],
-        "notes": quote.notes,
-    }
+        entry["hedge_funding"] = {key: _d(value) for key, value in spread.items()}
 
 
 @app.get("/api/health")
@@ -396,7 +365,7 @@ async def _run_scan(addresses: list[str]):
 
     results: list[dict[str, Any]] = []
     filtered_out = {"not_hedgeable": 0, "not_paying": 0, "no_carry_data": 0}
-    avantis_targets: list[tuple[dict[str, Any], Any, str, float, float, float]] = []
+    avantis_targets: list[tuple[dict[str, Any], Any, str, float]] = []
 
     for pos in positions:
         if not _avantis_can_hedge(pos.base_asset):
@@ -429,8 +398,7 @@ async def _run_scan(addresses: list[str]):
         entry["avantis_quote"] = None
         entry["avantis_liq"] = None
         entry["avantis_unavailable"] = None
-        entry["upside_quote"] = None
-        entry["upside_unavailable"] = None
+        entry["hedge_funding"] = None
         entry["source_liq"] = None
         entry["liq_distance_pct"] = None
         entry["source_carry"] = {
@@ -483,19 +451,14 @@ async def _run_scan(addresses: list[str]):
                 "model": "cross_margin",
             }
 
-        avantis_targets.append((entry, pos, hedge_side, notional, mark, lev))
+        avantis_targets.append((entry, pos, hedge_side, notional))
         results.append(entry)
 
     if avantis_targets:
         async with make_http_client(timeout=avantis.HTTP_TIMEOUT) as client:
-            # Fan out the standard Avantis perp and the Upside quote in parallel
-            # on the shared client. Both consume the same TTL-cached snapshot
-            # and price feeds; only the per-position spread calls duplicate.
             await asyncio.gather(
-                *(_enrich_avantis(e, p, hs, n, m, lv, client)
-                  for (e, p, hs, n, m, lv) in avantis_targets),
-                *(_enrich_upside(e, p, hs, n, client)
-                  for (e, p, hs, n, _m, _lv) in avantis_targets),
+                *(_enrich_avantis(e, p, hs, n, client)
+                  for (e, p, hs, n) in avantis_targets),
                 return_exceptions=False,
             )
 
@@ -536,29 +499,54 @@ async def _run_scan(addresses: list[str]):
     }
 
 
+async def _marks_from_adapter(cls: type) -> tuple[str, dict[str, float]]:
+    adapter = cls()
+    venue = getattr(adapter, "venue", getattr(cls, "venue", "unknown"))
+    try:
+        marks = await adapter.get_marks()
+        return venue, {k: float(v) for k, v in marks.items()}
+    except Exception:
+        return venue, {}
+    finally:
+        closer = getattr(adapter, "aclose", None)
+        if closer is not None:
+            await closer()
+
+
+async def _avantis_marks() -> dict[str, float]:
+    try:
+        marks = await avantis.get_marks()
+        return {k: float(v) for k, v in marks.items()}
+    except Exception:
+        return {}
+
+
+async def collect_venue_marks() -> dict[str, dict[str, float]]:
+    """Fan out to every public mark feed. One dead venue returns ``{}``."""
+    adapter_tasks = [_marks_from_adapter(cls) for cls in ADAPTER_CLASSES]
+    results = await asyncio.gather(
+        *adapter_tasks, _avantis_marks(), return_exceptions=True
+    )
+    prices: dict[str, dict[str, float]] = {}
+    avantis_result = results[-1]
+    for item in results[:-1]:
+        if isinstance(item, tuple) and len(item) == 2:
+            venue, marks = item
+            prices[venue] = marks if isinstance(marks, dict) else {}
+    prices["avantis"] = avantis_result if isinstance(avantis_result, dict) else {}
+    return prices
+
+
 @app.get("/api/prices")
 async def api_prices():
-    """Lightweight endpoint returning current mark prices per Ostium pair.
+    """Per-venue mark prices. Nested ``{venue: {market_or_asset: usd}}``.
 
-    The frontend polls this every few seconds to update PnL in place
-    without re-running the full scan.
+    The UI polls this to refresh PnL in place. Each position is marked
+    from *its* venue — mixing books would mis-state the residual on a
+    cross-venue hedge. A venue that cannot serve a bulk mark feed (GRVT)
+    is present as ``{}``; the poll then leaves that row's scan-time mark.
     """
-    adapter = OstiumAdapter()
-    try:
-        pairs = await adapter._get_pairs()
-    finally:
-        await adapter.aclose()
-
-    prices: dict[str, float] = {}
-    for pair in pairs.values():
-        sym = pair.get("from", "")
-        raw = pair.get("lastTradePrice")
-        if sym and raw:
-            try:
-                prices[sym] = float(Decimal(str(raw)) / PRICE_PRECISION)
-            except (ArithmeticError, ValueError):
-                pass
-    return {"prices": prices}
+    return {"prices": await collect_venue_marks()}
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +582,7 @@ HTML = """<!DOCTYPE html>
     font-variant-numeric: tabular-nums;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 56px 28px 90px; }
+  .wrap { max-width: 1260px; margin: 0 auto; padding: 56px 28px 90px; }
 
   /* Masthead */
   .mast { padding-bottom: 22px; border-bottom: 1px solid var(--rule); }
@@ -653,8 +641,11 @@ HTML = """<!DOCTYPE html>
   /* Expanded detail */
   tr.detail > td { background: var(--bg2); padding: 14px 0 20px; white-space: normal;
                    border-bottom: 1px solid var(--rule); }
-  .panes { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 32px; }
-  @media (max-width: 900px) { .panes { grid-template-columns: 1fr; } }
+  .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 0 32px; }
+  .panes.with-even { grid-template-columns: 1fr 1fr minmax(220px, 260px); }
+  @media (max-width: 980px) {
+    .panes, .panes.with-even { grid-template-columns: 1fr; }
+  }
   .pane h4 { font: 400 10px var(--mono); letter-spacing: .11em; text-transform: uppercase;
              color: var(--ink3); padding-bottom: 9px; margin-bottom: 8px;
              border-bottom: 1px solid var(--rule2); }
@@ -664,6 +655,28 @@ HTML = """<!DOCTYPE html>
   .kv.total > span:first-child { color: var(--ink2); }
   .note { color: var(--ink3); font-size: 11.5px; line-height: 1.6; margin-top: 12px;
           max-width: 52ch; }
+
+  /* Even-in calculation, beside the Avantis funding pane */
+  .even-box {
+    border: 1px solid var(--rule);
+    padding: 12px 14px 14px;
+    align-self: start;
+  }
+  .even-box h4 { margin-bottom: 4px; padding-bottom: 8px; }
+  .even-head { font: 600 28px/1.05 var(--display); letter-spacing: -.03em; margin: 2px 0 6px; }
+  .even-why { color: var(--ink3); font-size: 11.5px; line-height: 1.5; margin-bottom: 2px; }
+  .even-sec {
+    font: 400 10px var(--mono); letter-spacing: .11em; text-transform: uppercase;
+    color: var(--ink3); margin: 12px 0 4px; padding-top: 10px;
+    border-top: 1px solid var(--rule2);
+  }
+  .even-trade {
+    display: block; margin-top: 14px; padding-top: 10px;
+    border-top: 1px solid var(--rule2);
+    font: 400 10px var(--mono); letter-spacing: .11em; text-transform: uppercase;
+    color: var(--ink2); text-decoration: none;
+  }
+  .even-trade:hover { color: var(--ink); }
 
   /* Footnotes, errors, states */
   .foot { margin-top: 18px; color: var(--ink3); font-size: 11px; line-height: 1.7; }
@@ -698,7 +711,6 @@ HTML = """<!DOCTYPE html>
 
 <script>
 const $ = s => document.querySelector(s);
-let HORIZON = '24h';
 let POSITIONS = [];     // live reference for price updates
 let POLL_ID = null;     // setInterval handle
 
@@ -736,6 +748,14 @@ function price(n) {
 const bps = (n, d) => n == null ? '—' : nf(n, d == null ? 1 : d) + ' bps';
 const pct = (n, d) => n == null ? '—' : nf(n, d == null ? 1 : d) + '%';
 const kv = (k, v) => '<div class="kv"><span>' + k + '</span><span>' + v + '</span></div>';
+function hoursLabel(h) {
+  if (h == null) return 'never';
+  const v = Number(h);
+  if (v === 0) return 'now';
+  if (v < 24) return nf(v, 1) + ' h';
+  if (v < 168) return nf(v / 24, 1) + ' d';
+  return nf(v / 168, 1) + ' w';
+}
 
 /* ---------- scan ---------- */
 async function scan() {
@@ -767,7 +787,6 @@ function render(data) {
   const positions = (data.positions || []).slice();
   const errors = data.errors || [];
   const filter = data.filter || null;
-  if (data.horizon_hours != null) HORIZON = nf(data.horizon_hours, 0) + 'h';
 
   POSITIONS = positions;
   if (POLL_ID) clearInterval(POLL_ID);
@@ -786,14 +805,11 @@ function render(data) {
     return;
   }
 
-  // Positive carry first — CONTRACT.md section 6 calls these the actual
-  // opportunity — then anything hedgeable, then by size. Every row here is
-  // already filtered to "currently paying source funding AND hedgeable on
-  // Avantis", so the tail buckets are always empty in practice; kept as
-  // fallback ordering for the priced-but-flat-carry case.
-  const rank = p => p.avantis_quote ? (p.avantis_quote.positive_carry ? 0 : 1) : 2;
+  // Highest net funding APR first — that is the earn the table headlines.
   positions.sort((a, b) =>
-    rank(a) - rank(b) || Math.abs(b.notional_usd || 0) - Math.abs(a.notional_usd || 0));
+    ((b.hedge_funding && b.hedge_funding.net_apr_pct) || -1e9) -
+    ((a.hedge_funding && a.hedge_funding.net_apr_pct) || -1e9) ||
+    Math.abs(b.notional_usd || 0) - Math.abs(a.notional_usd || 0));
 
   $('#out').innerHTML =
     ledeHtml(positions) + statsHtml(positions) + tableHtml(positions) +
@@ -813,23 +829,17 @@ function render(data) {
 
 function ledeHtml(ps) {
   const n = ps.length;
-  const quoted = ps.filter(p => p.avantis_quote);
-  const carry = quoted.filter(p => p.avantis_quote.positive_carry);
-  const cost = quoted.reduce((s, p) => s + (p.avantis_quote.total_usd || 0), 0);
-  // Denominator is the SHOWN count, never the pre-filter total: hidden rows
-  // were dropped before the Avantis quote pass, so they were never evaluated
-  // for carry and "1 of 11" would be a denominator we never measured. The
-  // kept-vs-total framing belongs to the Hidden aside, which states it once.
+  const withHf = ps.filter(p => p.hedge_funding);
+  const earn = withHf.reduce((s, p) => s + (p.hedge_funding.earn_usd_24h || 0), 0);
   const some = k => k === n ? '' : ' &mdash; ' + k + ' of ' + n;
 
   let text;
-  if (carry.length) {
-    text = '<em>Positive carry</em> on Avantis' + some(carry.length) + '.';
-  } else if (quoted.length) {
-    text = 'Hedge on Avantis: ' + usd(cost) + ' over ' + HORIZON + some(quoted.length) + '.';
+  if (withHf.length) {
+    text = (earn > 0
+      ? '<em>Earn</em> ' + usd(earn) + ' in 24h'
+      : 'Net funding ' + signedUsd(earn) + ' in 24h') +
+      ' hedging on Avantis' + some(withHf.length) + '.';
   } else {
-    // Filter guarantees hedgeable-on-Avantis, so any missing quote is a live
-    // pricing failure, not a listing gap.
     const why = ps.map(p => p.avantis_unavailable).filter(Boolean);
     const same = why.length === ps.length && new Set(why).size === 1;
     text = same ? esc(why[0]) : 'Paying funding on Avantis-listed pairs, not priceable right now.';
@@ -841,12 +851,14 @@ function statsHtml(ps) {
   const gross = ps.reduce((s, p) => s + Math.abs(p.notional_usd || 0), 0);
   const pnl = ps.reduce((s, p) => s + (p.unrealized_pnl_usd || 0), 0);
   const paid = ps.reduce((s, p) => s + (p.funding_paid_usd || 0), 0);
+  const earn = ps.reduce((s, p) => s + ((p.hedge_funding && p.hedge_funding.earn_usd_24h) || 0), 0);
   const quoted = ps.filter(p => p.avantis_quote).length;
   return '<div class="stats">' +
     '<div>Positions<b>' + ps.length + '</b></div>' +
     '<div>Notional<b>' + compactUsd(gross) + '</b></div>' +
     '<div>PnL<b class="' + tone(pnl) + '">' + signedUsd(pnl) + '</b></div>' +
     '<div>Funding<b class="' + tone(paid) + '">' + signedUsd(paid) + '</b></div>' +
+    '<div>Earn 24h<b class="' + tone(earn) + '">' + signedUsd(earn) + '</b></div>' +
     '<div>Priced<b>' + quoted + ' / ' + ps.length + '</b></div>' +
     '</div>';
 }
@@ -857,14 +869,13 @@ function tableHtml(ps) {
   let h = '<div class="scroll"><table><thead><tr>' +
     '<th>Market</th><th>Venue</th><th>Notional</th><th>Lev</th><th>Entry</th><th>Mark</th>' +
     '<th>PnL</th><th>Funding</th><th>Liq</th>' +
-    '<th>Hedge ' + HORIZON + '</th>' +
+    '<th>Fees</th><th>Net APR</th><th>Earn 24h</th><th>Even in</th>' +
     '</tr></thead><tbody>';
   ps.forEach((p, i) => { h += rowHtml(p, i); });
   return h + '</tbody></table></div>';
 }
 
 function rowHtml(p, i) {
-  const q = p.avantis_quote;
   const sideCls = p.side === 'long' ? 'up' : 'down';
 
   const liqPrice = p.liquidation_price != null ? p.liquidation_price
@@ -881,11 +892,23 @@ function rowHtml(p, i) {
     : f > 0 ? '<span class="up">' + signedUsd(f) + '</span>'
     : '<span class="dim">$0</span>';
 
-  const hedge = q
-    ? '<span class="' + (q.positive_carry ? 'up' : '') + '">' + bps(q.total_bps) + '</span>' +
-      ' <span class="' + (q.positive_carry ? 'up' : 'dim') + '">' + usd(q.total_usd) + '</span>'
-    : '<span class="dim">' + (!p.can_hedge_on_avantis ? 'not listed'
-        : p.avantis_unavailable ? 'unavailable' : 'no quote') + '</span>';
+  const hf = p.hedge_funding;
+  const apr = hf
+    ? '<span class="' + tone(hf.net_apr_pct) + '">' + pct(hf.net_apr_pct, 1) + '</span>'
+    : '<span class="dim">—</span>';
+  const earn = hf
+    ? '<span class="' + tone(hf.earn_usd_24h) + '">' + signedUsd(hf.earn_usd_24h) + '</span>'
+    : '<span class="dim">' + (p.avantis_unavailable ? 'unavailable' : '—') + '</span>';
+
+  const even = hf
+    ? (hf.breakeven_hours == null
+        ? '<span class="dim">never</span>'
+        : hoursLabel(hf.breakeven_hours))
+    : '<span class="dim">—</span>';
+
+  const fees = hf
+    ? '<span class="mut">' + usd(hf.cover_usd) + '</span>'
+    : '<span class="dim">—</span>';
 
   return '<tr class="row" data-i="' + i + '">' +
     '<td><span class="caret">+</span><span class="sym">' + esc(p.base_asset) + '</span>' +
@@ -898,13 +921,16 @@ function rowHtml(p, i) {
     '<td class="' + tone(p.unrealized_pnl_usd) + '">' + signedUsd(p.unrealized_pnl_usd) + '</td>' +
     '<td>' + funding + '</td>' +
     '<td>' + liq + '</td>' +
-    '<td>' + hedge + '</td>' +
+    '<td>' + fees + '</td>' +
+    '<td>' + apr + '</td>' +
+    '<td>' + earn + '</td>' +
+    '<td>' + even + '</td>' +
     '</tr>' +
-    '<tr class="detail" style="display:none"><td colspan="10">' + detailHtml(p) + '</td></tr>';
+    '<tr class="detail" style="display:none"><td colspan="13">' + detailHtml(p) + '</td></tr>';
 }
 
 function detailHtml(p) {
-  const sl = p.source_liq, al = p.avantis_liq, q = p.avantis_quote;
+  const sl = p.source_liq, q = p.avantis_quote;
   const sc = p.source_carry;
 
   let left = '<div class="pane"><h4>' + esc(p.venue) + ' &middot; ' + esc(p.market) + '</h4>';
@@ -914,17 +940,12 @@ function detailHtml(p) {
   left += kv('Collateral', usd(p.collateral_usd));
   left += kv('Margin', esc(p.margin_mode || '—'));
   if (sc) {
-    // "Funding 8h" here is signed from the POSITION's side (positive = the
-    // position receives, negative = pays). Every row is filtered on net < 0
-    // so the highlight color is always down; kept as a visual anchor.
     left += kv('Funding 8h', bps(sc.funding_8h_bps) +
       (sc.funding_8h_bps > 0 ? ' <span class="up">received</span>'
        : sc.funding_8h_bps < 0 ? ' <span class="down">paid</span>' : ''));
-    // With no borrow leg, net == funding, so a "Net 8h" row would just repeat
-    // the line above it. Only show it when borrow actually moves the number.
     if (sc.borrow_8h_bps > 0) {
-      left += kv('Borrow 8h', bps(sc.borrow_8h_bps));
-      left += kv('Net 8h', '<span class="down">' + bps(sc.net_8h_bps) + ' paid</span>');
+      left += kv('Borrow 8h', bps(sc.borrow_8h_bps) +
+        ' <span class="down">paid</span>');
     }
   }
   if (p.funding_paid_usd != null) {
@@ -934,39 +955,31 @@ function detailHtml(p) {
     const slLiq = sl.liq_price != null ? price(sl.liq_price) : '—';
     const slDist = sl.distance_pct != null ? pct(sl.distance_pct, 2) : '—';
     left += kv('Liquidation', slLiq + ' &middot; ' + slDist);
-    if (sl.penalty_usd != null)
-      left += kv('Penalty', usd(sl.penalty_usd) + ' (' + bps(sl.penalty_bps, 0) + ')');
     left += kv('Exposed', sl.cross_margin_risk === 'full_account'
       ? '<span class="down">whole account</span>' : 'position only');
-    left += kv('Model', esc(sl.model).replace(/_/g, ' '));
   }
   left += '</div>';
 
   let right = '<div class="pane">';
   if (q) {
+    const hf = p.hedge_funding;
     right += '<h4>Avantis hedge &middot; ' + esc(q.side) + ' ' + esc(q.market) + '</h4>';
-    right += kv('Fees', bps((q.open_fee_bps || 0) + (q.close_fee_bps || 0)));
-    right += kv('Spread', bps(q.spread_bps));
-    right += kv('Round trip', bps(q.round_trip_bps));
     right += kv('Funding 8h', bps(q.funding_rate_8h_bps) +
       (q.funding_rate_8h_bps > 0 ? ' <span class="up">received</span>'
        : q.funding_rate_8h_bps < 0 ? ' <span class="down">paid</span>' : ''));
-    right += kv('Borrow 8h', bps(q.borrow_rate_8h_bps));
-    right += kv('Carry ' + HORIZON, bps(q.carry_bps));
-    right += '<div class="kv total"><span>All-in ' + HORIZON + '</span><span class="' +
-      (q.positive_carry ? 'up' : '') + '">' + bps(q.total_bps) + ' &middot; ' + usd(q.total_usd) +
-      '</span></div>';
-    if (q.breakeven_hours != null) {
-      right += kv('Breakeven', nf(q.breakeven_hours, 1) + ' h');
+    if (q.borrow_rate_8h_bps > 0) {
+      right += kv('Borrow 8h', bps(q.borrow_rate_8h_bps) +
+        ' <span class="down">paid</span>');
     }
-    if (al) {
-      right += kv('Liquidation', price(al.liq_price) + ' &middot; ' + pct(al.distance_pct, 2));
-      right += kv('Exposed', 'position only');
+    if (hf) {
+      right += kv('Source APR',
+        '<span class="' + tone(hf.source_apr_pct) + '">' + pct(hf.source_apr_pct, 1) + '</span>');
+      right += kv('Avantis APR',
+        '<span class="' + tone(hf.hedge_apr_pct) + '">' + pct(hf.hedge_apr_pct, 1) + '</span>');
+      right += '<div class="kv total"><span>Net APR</span><span class="' +
+        tone(hf.net_apr_pct) + '">' + pct(hf.net_apr_pct, 1) + ' &middot; ' +
+        signedUsd(hf.earn_usd_24h) + ' in 24h</span></div>';
     }
-    if (q.fee_schedule_unverified) {
-      right += '<p class="note">Static fee fallback, not a live read.</p>';
-    }
-    if (q.notes) right += '<p class="note">' + esc(q.notes) + '</p>';
   } else if (p.can_hedge_on_avantis) {
     right += '<h4>Avantis hedge &middot; ' + esc(p.hedge_side) + ' ' + esc(p.base_asset) + '</h4>';
     right += '<p class="note">' + (p.avantis_unavailable
@@ -976,45 +989,81 @@ function detailHtml(p) {
   }
   right += '</div>';
 
-  // Third pane: Avantis (Upside), a distinct hedge instrument. Zero commission
-  // and zero borrow, in exchange for a share of gross profit only on a winning
-  // close. Not a cheaper Avantis — a different risk shape (see CONTRACT.md §7.6).
-  const uq = p.upside_quote;
-  let upside = '<div class="pane">';
-  if (uq) {
-    upside += '<h4>Avantis (Upside) &middot; ' + esc(uq.side) + ' ' + esc(uq.market) + '</h4>';
-    upside += kv('Open fee', bps(uq.open_fee_bps));
-    upside += kv('Close fee', bps(uq.close_fee_bps));
-    upside += kv('Spread', bps(uq.spread_bps));
-    upside += kv('Funding 8h', bps(uq.funding_rate_8h_bps) +
-      (uq.funding_rate_8h_bps > 0 ? ' <span class="up">received</span>'
-       : uq.funding_rate_8h_bps < 0 ? ' <span class="down">paid</span>' : ''));
-    upside += kv('Borrow 8h', bps(uq.borrow_rate_8h_bps));
-    if (uq.profit_share_schedule && uq.profit_share_schedule.length) {
-      const bands = uq.profit_share_schedule
-        .map(b => 'ROI &ge;' + nf(b[0], 0) + '% &rarr; ' + nf(b[1], 0) + '%')
-        .join(' &middot; ');
-      upside += '<p class="note"><b>Profit share (live pnlFees):</b> ' + bands +
-        '. Zero cost if the hedge closes at a loss.</p>';
-    }
-    upside += '<p class="note">Cheaper than the standard Avantis perp when the ' +
-      'hedge turns out unnecessary; more expensive when the hedge actually pays ' +
-      'off, because you surrender the profit share above. Market orders only; ' +
-      'crypto majors only (BTC/ETH/SOL/XRP/HYPE).</p>';
-  } else if (p.can_hedge_on_avantis) {
-    upside += '<h4>Avantis (Upside) &middot; ' + esc(p.hedge_side) + ' ' + esc(p.base_asset) + '</h4>';
-    upside += '<p class="note">' + (p.upside_unavailable
-      ? esc(p.upside_unavailable)
-      : 'No Upside quote for this size.') + '</p>';
-  } else {
-    upside += '<h4>Avantis (Upside)</h4><p class="note">Not listed on Avantis.</p>';
-  }
-  upside += '</div>';
+  const even = evenBoxHtml(p);
+  return '<div class="panes' + (even ? ' with-even' : '') + '">' +
+    left + right + even + '</div>';
+}
 
-  return '<div class="panes">' + left + right + upside + '</div>';
+function evenBoxHtml(p) {
+  const q = p.avantis_quote, hf = p.hedge_funding;
+  if (!q || !hf) return '';
+
+  const notional = Math.abs(p.notional_usd || 0);
+  const toUsd = b => notional * Number(b || 0) / 10000;
+  const openBps = q.open_fee_bps || 0;
+  const closeBps = q.close_fee_bps || 0;
+  const spreadBps = q.spread_bps || 0;
+  const openUsd = toUsd(openBps);
+  const closeUsd = toUsd(closeBps);
+  const spreadUsd = toUsd(spreadBps);
+  const feesUsd = hf.cover_usd != null ? hf.cover_usd : openUsd + closeUsd + spreadUsd;
+  const earn = hf.earn_usd_24h || 0;
+  const hours = hf.breakeven_hours;
+  const sc = p.source_carry || {};
+  const src24 = toUsd(sc.funding_8h_bps) * 3;
+  const borrow24 = toUsd(sc.borrow_8h_bps) * 3;
+  const hedgeNet8h = (q.funding_rate_8h_bps || 0) - (q.borrow_rate_8h_bps || 0);
+  const hedge24 = toUsd(hedgeNet8h) * 3;
+  const recoup = earn - borrow24;
+
+  const head = hours == null
+    ? '<span class="dim">never</span>'
+    : hoursLabel(hours);
+  const why = hours == null
+    ? 'Net after source borrow does not cover Avantis fees.'
+    : usd(feesUsd) + ' fees ÷ ' + usd(recoup) + ' / 24h';
+
+  let h = '<div class="pane even-box">';
+  h += '<h4>Even in</h4>';
+  h += '<div class="even-head">' + head + '</div>';
+  h += '<p class="even-why">' + why + '</p>';
+
+  h += '<div class="even-sec">Fees occurred</div>';
+  const tier = q.fee_tier && q.fee_tier !== 'n/a' ? ' <span class="mut">' + esc(q.fee_tier) + '</span>' : '';
+  h += kv('Open' + tier, usd(openUsd) + ' <span class="mut">' + bps(openBps) + '</span>');
+  h += kv('Close', usd(closeUsd) + ' <span class="mut">' + bps(closeBps) + '</span>');
+  h += kv('Spread', usd(spreadUsd) + ' <span class="mut">' + bps(spreadBps) + '</span>');
+  h += '<div class="kv total"><span>Total</span><span>' + usd(feesUsd) +
+    ' <span class="mut">' + bps(hf.cover_bps) + '</span></span></div>';
+
+  h += '<div class="even-sec">Funding / 24h</div>';
+  h += kv('Source', '<span class="' + tone(src24) + '">' + signedUsd(src24) + '</span>');
+  if (borrow24 > 0) {
+    h += kv('Borrow', '<span class="down">' + signedUsd(-borrow24) + '</span>');
+  }
+  h += kv('Avantis', '<span class="' + tone(hedge24) + '">' + signedUsd(hedge24) + '</span>');
+  h += '<div class="kv total"><span>Net</span><span class="' + tone(earn) + '">' +
+    signedUsd(earn) + '</span></div>';
+  h += '<a class="even-trade" href="' + esc(avantisTradeUrl(p)) +
+    '" target="_blank" rel="noopener noreferrer">Hedge on Avantis</a>';
+  return h + '</div>';
+}
+
+function avantisTradeUrl(p) {
+  const market = (p.avantis_quote && p.avantis_quote.market) || '';
+  const asset = market.indexOf('/') !== -1
+    ? market.replace('/', '-')
+    : (p.base_asset || '') + '-USD';
+  return 'https://www.avantisfi.com/trade?asset=' + encodeURIComponent(asset);
 }
 
 /* ---------- live price polling ---------- */
+function markFor(p, px) {
+  const venuePx = (px && px[p.venue]) || {};
+  if (p.market != null && venuePx[p.market] != null) return venuePx[p.market];
+  return venuePx[p.base_asset];
+}
+
 async function pollPrices() {
   if (!POSITIONS.length) return;
   try {
@@ -1024,7 +1073,7 @@ async function pollPrices() {
     let totalPnl = 0, totalNotional = 0;
 
     POSITIONS.forEach((p, i) => {
-      const newMark = px[p.base_asset];
+      const newMark = markFor(p, px);
       if (newMark == null || !p.size_base) return;
       p.mark_price = newMark;
       p.notional_usd = p.size_base * newMark;
@@ -1037,12 +1086,24 @@ async function pollPrices() {
       const row = document.querySelector('tr.row[data-i="' + i + '"]');
       if (!row) return;
       const cells = row.querySelectorAll('td');
-      // cols: 0=market, 1=venue, 2=notional, 3=lev, 4=entry, 5=mark, 6=unrealized, 7=funding, 8=liq, 9=hedge
+      // cols: 0=market, 1=venue, 2=notional, 3=lev, 4=entry, 5=mark, 6=unrealized,
+      // 7=funding, 8=liq, 9=fees, 10=net apr, 11=earn 24h, 12=even in
       cells[2].textContent = usd(Math.abs(p.notional_usd));
       cells[5].textContent = price(p.mark_price);
       const pnl = p.unrealized_pnl_usd;
       cells[6].className = tone(pnl);
       cells[6].innerHTML = signedUsd(pnl);
+      if (p.hedge_funding) {
+        p.hedge_funding.cover_usd =
+          Math.abs(p.notional_usd) * p.hedge_funding.cover_bps / 10000;
+        p.hedge_funding.earn_usd_24h =
+          Math.abs(p.notional_usd) * p.hedge_funding.net_8h_bps * 3 / 10000;
+        cells[9].innerHTML =
+          '<span class="mut">' + usd(p.hedge_funding.cover_usd) + '</span>';
+        cells[11].innerHTML =
+          '<span class="' + tone(p.hedge_funding.earn_usd_24h) + '">' +
+          signedUsd(p.hedge_funding.earn_usd_24h) + '</span>';
+      }
     });
 
     // Update summary stats
@@ -1057,14 +1118,21 @@ async function pollPrices() {
       b.className = tone(totalPnl);
       b.textContent = signedUsd(totalPnl);
     }
+    if (statEls[4]) {
+      const earn = POSITIONS.reduce((s, p) =>
+        s + ((p.hedge_funding && p.hedge_funding.earn_usd_24h) || 0), 0);
+      const b = statEls[4].querySelector('b');
+      b.className = tone(earn);
+      b.textContent = signedUsd(earn);
+    }
   } catch (_) {}
 }
 
 function footHtml() {
-  // The filter rule is stated once in the masthead subtitle and its effect once
-  // in the Hidden aside; repeating it here made this a two-line paragraph.
-  return '<p class="foot">All-in ' + HORIZON + ' = open + close + spread + ' +
-    '(borrow &minus; funding) &times; ' + HORIZON + '/8h. Negative is positive carry. Read-only.</p>';
+  return '<p class="foot">Earn 24h is net funding (source + Avantis) on current notional. ' +
+    'Fees occurred are Avantis open, close, and both spread legs — a one-time hurdle, ' +
+    'not in Earn 24h. Even in is that hurdle divided by net funding per hour. ' +
+    'Never means net funding is not a receive. Read-only.</p>';
 }
 
 function filterHtml(filter) {

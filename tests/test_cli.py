@@ -706,24 +706,19 @@ class TestFeesCommand:
             assert name in result.output
         assert "verified" in result.output
 
-    def test_avantis_row_shows_live_maker_round_trip(self, mock_avantis_live):
-        """Live snapshot gives openMakerFeeP=1.0 bps + closeMakerFeeP=1.0 bps.
+    def test_avantis_row_shows_live_maker_and_taker_round_trips(self, mock_avantis_live):
+        """Live snapshot: maker 1.0/1.0 (RT 2.0) and taker 4.5/4.5 (RT 9.0).
 
-        CONTRACT.md §12.8 prices both legs maker, so the display MUST show the
-        2.0 bps round trip the ranker consumes -- and must also surface the
-        taker-close alternative so the assumption stays visible (§12.8 point 6).
+        CONTRACT.md §12.11 selects by live OI skew, so the display must show
+        both tiers rather than a single maker round trip.
         """
         result = runner.invoke(app, ["fees", "--width", "180"])
         assert result.exit_code == 0, result.output
         assert "LIVE" in result.output
         assert "BTC/USD" in result.output
-        # 2.0 bps maker round trip (§12.8).
-        assert "2.0" in result.output
-        # Both maker fields labelled with their live values.
-        assert "openMakerFeeP=1.0 bps" in result.output
-        assert "closeMakerFeeP=1.0 bps" in result.output
-        # The 5.5 bps taker-close alternative is disclosed, not hidden.
-        assert "taker close would make it 5.5 bps" in result.output
+        assert "maker 1.0/1.0 bps (RT 2.0)" in result.output
+        assert "taker 4.5/4.5 bps (RT 9.0)" in result.output
+        assert "OI skew" in result.output
         # The source URL is visible so a reader can see where the numbers came
         # from. Domain is prod-api.avantisfi.com/data/v2/trading (see §12.7 for
         # why we do not hit data.avantisfi.com directly).
@@ -799,9 +794,10 @@ class TestFeesCommand:
         assert Decimal(btc["openMakerFeeP_bps"]) == Decimal("1.0")
         assert Decimal(btc["closeMakerFeeP_bps"]) == Decimal("1.0")
         assert Decimal(btc["closeTakerFeeP_bps"]) == Decimal("4.5")
-        # What the ranker prices (§12.8), and the alternative it discloses.
+        # Both tiers the ranker can select (§12.11).
         assert Decimal(btc["maker_round_trip_bps"]) == Decimal("2.0")
-        assert Decimal(btc["taker_close_round_trip_bps"]) == Decimal("5.5")
+        assert Decimal(btc["taker_round_trip_bps"]) == Decimal("9.0")
+        assert "OI skew" in payload["avantis"]["hedge_model"]
         # At least one RWA pair returned 0/0/0/0 promotional.
         rwa = payload["avantis"]["rwa_pairs"]
         assert any(r.get("promotional_zero") for r in rwa if r.get("listed"))

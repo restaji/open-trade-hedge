@@ -28,7 +28,13 @@ import httpx
 
 from ..assets import normalize_base_asset
 from ..models import Position, Quote
-from .base import VenueRequiresAuthError, VenueUnavailableError, make_http_client, walk_book
+from .base import (
+    VenueRequiresAuthError,
+    VenueUnavailableError,
+    make_http_client,
+    record_mark,
+    walk_book,
+)
 
 DEFAULT_BASE_URL = "https://api.ondoperps.xyz/v1"
 BOOK_DEPTH = 100
@@ -47,6 +53,15 @@ BPS = Decimal(10) ** 4
 # Funding is applied every hour, on the UTC hour boundary.
 # https://docs.ondoperps.xyz/funding-rates
 FUNDING_INTERVAL_HOURS = Decimal(1)
+
+
+def _dec(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (ArithmeticError, ValueError):
+        return None
 
 
 class OndoAdapter:
@@ -100,6 +115,22 @@ class OndoAdapter:
 
     async def get_positions(self, address: str) -> list[Position]:
         raise VenueRequiresAuthError(self.venue, AUTH_MESSAGE)
+
+    async def get_marks(self) -> dict[str, Decimal]:
+        """Ondo index (fallback last), keyed by base currency and market."""
+        contracts = await self._get("/perps/contracts")
+        out: dict[str, Decimal] = {}
+        for row in contracts:
+            if row.get("disabled"):
+                continue
+            price = _dec(row.get("indexPrice")) or _dec(row.get("lastPrice"))
+            base = row.get("baseCurrency") or ""
+            market = row.get("market") or ""
+            if base:
+                record_mark(out, base, price)
+            if market:
+                record_mark(out, market, price)
+        return out
 
     async def get_quote(
         self, base_asset: str, side: str, notional_usd: Decimal

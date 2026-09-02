@@ -23,6 +23,20 @@ CUSTODY_ORDER = (
     "5Pv3gM9JrFFH883SWAhvJC9RPYmo8UNxuFtv5bMMALkm",  # BTC
     "G18jKKXQwBbrHeiK3C9MRXhkHsLHf7XgCSisykV46EZa",  # USDC
 )
+_CUSTODY_SET = set(CUSTODY_ORDER)
+
+# Doves oracle accounts (Jupiter Perps mark price source). Recorded live from
+# mainnet 2026-09-02; SOL/ETH/BTC/USDC are fresh, USDT is intentionally left
+# stale (real live state at capture time: 89 days behind), which the adapter's
+# staleness filter drops so the fallback path is exercised.
+DOVES_ORDER = (
+    "FYq2BWQ1V5P1WFBqr3qB2Kb5yHVvSv7upzKodgQE5zXh",  # SOL
+    "AFZnHPzy4mvVCffrVwhewHbFc93uTHvDSFrVH7GtfXF1",  # ETH
+    "hUqAT1KQ7eW1i6Csp9CXYtpPfSAvi835V7wKi5fRfmC",   # BTC
+    "6Jp2xZUTWdDD2ZyUPRzeMdc6AFQ5K3pFgZxk2EijfjnM",  # USDC
+    "Fgc93D641F8N2d1xLjQ4jmShuD3GE3BsCXA56KBQbF5u",  # USDT
+)
+_DOVES_SET = set(DOVES_ORDER)
 
 
 def load(name: str) -> dict:
@@ -40,13 +54,22 @@ def _solana_rpc_response(request: httpx.Request) -> httpx.Response:
     if method == "getProgramAccounts":
         return httpx.Response(200, json=load("jupiter_program_accounts.json"))
     if method == "getMultipleAccounts":
-        # The RPC returns one slot per requested pubkey, in request order, so
-        # the replay has to honour the request rather than dump every custody.
-        recorded = load("jupiter_custodies.json")
-        by_pubkey = dict(
-            zip(CUSTODY_ORDER, recorded["result"]["value"], strict=True)
-        )
+        # The RPC returns one slot per requested pubkey, in request order.
+        # Adapter code fires two distinct batches concurrently -- custodies and
+        # Doves oracles -- so route by the first requested pubkey. Mixed
+        # batches are not something the adapter ever produces.
         requested = body["params"][0]
+        first = requested[0] if requested else ""
+        if first in _DOVES_SET:
+            recorded = load("jupiter_doves.json")
+            by_pubkey = dict(
+                zip(DOVES_ORDER, recorded["result"]["value"], strict=True)
+            )
+        else:
+            recorded = load("jupiter_custodies.json")
+            by_pubkey = dict(
+                zip(CUSTODY_ORDER, recorded["result"]["value"], strict=True)
+            )
         return httpx.Response(
             200,
             json={
@@ -69,6 +92,12 @@ def _handler(request: httpx.Request) -> httpx.Response:
         return _solana_rpc_response(request)
     if "lite-api.jup.ag/price/v3" in url:
         return httpx.Response(200, json=load("jupiter_price_v3.json"))
+
+    if "perps-api.jup.ag" in url:
+        # Default: return 404 so tests exercise the on-chain fallback path.
+        # Tests that want to exercise the API-primary path override the
+        # transport inline (see `test_get_positions_prefers_perps_api`).
+        return httpx.Response(404, json={"error": "not found"})
 
     if "api.pacifica.fi" in url:
         if "/positions" in url:

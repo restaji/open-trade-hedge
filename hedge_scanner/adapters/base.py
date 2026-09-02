@@ -13,6 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
+from ..assets import normalize_base_asset
 from ..models import Position, Quote
 
 
@@ -76,6 +77,23 @@ class VenueUnavailableError(AdapterError):
 BPS = Decimal(10) ** 4
 
 
+def record_mark(
+    out: dict[str, Decimal], native: str, price: Decimal | None
+) -> None:
+    """Index a mark under the venue-native key and the canonical base asset.
+
+    Canonical is ``setdefault`` so the first writer wins. Call the primary
+    market first (native DEX, standard perp), then aliases (HIP-3, Upside)
+    so they cannot overwrite a better-sourced mark for the same underlying.
+    """
+    if not native or price is None or price <= 0:
+        return
+    out[native] = price
+    canonical = normalize_base_asset(native)
+    if canonical:
+        out.setdefault(canonical, price)
+
+
 def walk_book(
     levels: list[tuple[Decimal, Decimal]], notional_usd: Decimal
 ) -> tuple[Decimal | None, str]:
@@ -124,5 +142,9 @@ class VenueAdapter(Protocol):
     async def get_quote(
         self, base_asset: str, side: str, notional_usd: Decimal
     ) -> Quote: ...
+
+    async def get_marks(self) -> dict[str, Decimal]:
+        """Venue-native mark USD, keyed by market symbol and canonical base."""
+        ...
 
     async def health(self) -> bool: ...
