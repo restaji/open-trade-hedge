@@ -1,0 +1,25 @@
+:root {
+  --bg: #f5f2e8;
+  --surface: #fbf9f3;
+  --row-alt: #efebdf;
+  --rule: #ddd7c6;
+  --text: #1c1a15;
+  --text-dim: #6b6558;
+  --text-faint: #9a9284;
+  --pos: #2f7d4f;
+  --neg: #b4453a;
+  --accent-a: #7b5cd6;
+  --accent-b: #4aa8d8;
+  --accent-warn: #c99a2e;
+
+  /* aliases for existing class names */
+  --ink: var(--text);
+  --ink2: var(--text-dim);
+  --ink3: var(--text-faint);
+  --up: var(--pos);
+  --down: var(--neg);
+  --bg2: var(--surface);
+  --rule2: var(--rule);
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: Inter, "Helvetica Neue", system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+}

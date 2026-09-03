@@ -58,6 +58,10 @@ _FEE_CACHE_TTL_S = 300.0
 # scans while sparing every scan a discovery round-trip.
 _PERP_DEXS_CACHE_TTL_S = 600.0
 
+# Predicted hourly funding from metaAndAssetCtxs. Avantis (and a hedge
+# opened now) track the current rate, not the last hourly settlement.
+_FUNDING_CTX_TTL_S = 10.0
+
 # The zero address is used to query the base fee schedule without a real account.
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
@@ -90,6 +94,8 @@ class HyperliquidAdapter:
         self._fee_cache: tuple[float, Decimal, Decimal, bool] | None = None
         # (fetched_at, sub_dex_names). None means "never fetched".
         self._perp_dexs_cache: tuple[float, tuple[str, ...]] | None = None
+        # (fetched_at, coin -> hourly funding fraction). Native DEX only.
+        self._funding_fracs_cache: tuple[float, dict[str, Decimal]] | None = None
 
     async def __aenter__(self) -> HyperliquidAdapter:
         return self
@@ -406,7 +412,7 @@ class HyperliquidAdapter:
             est_slippage_bps=Decimal(0),
             available=available,
             notes=(
-                f"{fee_note}; funding hourly, shown as 8h equivalent. "
+                f"{fee_note}; funding hourly (predicted), shown as 8h equivalent. "
                 "Orderbook venue with deep book; price impact not modeled."
                 + ("" if available else " No live funding rate available.")
             ),
@@ -485,13 +491,39 @@ class HyperliquidAdapter:
                 return coin
         return None
 
-    async def _latest_funding_8h_bps(self, coin: str) -> Decimal | None:
-        """Fetch the latest hourly funding rate and convert to 8h bps.
+    async def _native_predicted_funding_fracs(self) -> dict[str, Decimal]:
+        """Current hourly funding fraction per native-DEX coin.
 
-        Signed per Hyperliquid convention: positive = longs pay shorts. Callers
-        that need the position-holder's perspective (positive = holder
-        receives) flip the sign against the holder's side.
+        ``metaAndAssetCtxs.funding`` is the rate a position opened now accrues
+        (premium + 0.01%/8h clamp, paid hourly). ``fundingHistory`` is the last
+        settlement and can lag by up to an hour — live SOL on 2026-09-02
+        was 0.00076%/h predicted vs 0.00125%/h last settled.
         """
+        now = time.monotonic()
+        hit = self._funding_fracs_cache
+        if hit is not None and now - hit[0] < _FUNDING_CTX_TTL_S:
+            return hit[1]
+        try:
+            data = await self._post({"type": "metaAndAssetCtxs"})
+        except VenueUnavailableError:
+            self._funding_fracs_cache = (now, {})
+            return {}
+        if not isinstance(data, list) or len(data) < 2:
+            self._funding_fracs_cache = (now, {})
+            return {}
+        universe = data[0].get("universe") or []
+        ctxs = data[1] if isinstance(data[1], list) else []
+        out: dict[str, Decimal] = {}
+        for row, ctx in zip(universe, ctxs):
+            name = (row or {}).get("name")
+            frac = _dec((ctx or {}).get("funding"))
+            if name and frac is not None:
+                out[name] = frac
+        self._funding_fracs_cache = (now, out)
+        return out
+
+    async def _settled_funding_8h_bps(self, coin: str) -> Decimal | None:
+        """Last hourly settlement, as 8h bps. Fallback when predicted is missing."""
         try:
             start_ms = int((time.time() - 7200) * 1000)
             data = await self._post({
@@ -509,12 +541,25 @@ class HyperliquidAdapter:
             return None
         return hourly_rate * FUNDING_HOURLY_TO_8H * BPS
 
+    async def _latest_funding_8h_bps(self, coin: str) -> Decimal | None:
+        """Hourly funding as 8h bps. Predicted first, last settled as fallback.
+
+        Signed per Hyperliquid convention: positive = longs pay shorts. Callers
+        that need the position-holder's perspective (positive = holder
+        receives) flip the sign against the holder's side.
+        """
+        predicted = (await self._native_predicted_funding_fracs()).get(coin)
+        if predicted is not None:
+            return predicted * FUNDING_HOURLY_TO_8H * BPS
+        return await self._settled_funding_8h_bps(coin)
+
     async def _annotate_current_funding(self, positions: list[Position]) -> None:
         """Fill ``current_funding_rate_8h_bps`` on each held position, in place.
 
-        One ``fundingHistory`` call per unique held coin, fanned out in
-        parallel. A per-coin failure leaves that position's rate as ``None``
-        (adapter-level degradation is documented in §12.9), never as zero.
+        Native coins share one ``metaAndAssetCtxs`` fetch. HIP-3 coins (absent
+        from that payload) fall back to per-coin ``fundingHistory``. A per-coin
+        failure leaves that position's rate as ``None`` (adapter-level
+        degradation is documented in §12.9), never as zero.
 
         The Hyperliquid published rate is positive when longs pay, so the
         POSITION HOLDER'S perspective flips against the position side:

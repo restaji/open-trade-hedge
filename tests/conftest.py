@@ -147,6 +147,10 @@ def _handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=load("hyperliquid/all_mids.json"))
         if req_type == "meta":
             return httpx.Response(200, json=load("hyperliquid/meta.json"))
+        if req_type == "metaAndAssetCtxs":
+            return httpx.Response(
+                200, json=load("hyperliquid/meta_and_asset_ctxs.json")
+            )
         if req_type == "fundingHistory":
             return httpx.Response(
                 200, json=load("hyperliquid/funding_history_btc.json")

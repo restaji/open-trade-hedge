@@ -352,6 +352,69 @@ async def test_get_positions_prefers_perps_api_over_on_chain(adapter_now_s):
     assert p.funding_paid_usd == Decimal("-17.42")
 
 
+async def test_get_positions_stamps_borrow_as_current_funding(adapter_now_s):
+    """Jupiter has no funding rate; holder carry is −borrow so the Avantis gate sees it."""
+    import httpx as _httpx
+
+    api_body = {
+        "dataList": [
+            {
+                "borrowFeesUsd": "17.42",
+                "collateral": "10000.00",
+                "collateralMint": "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",
+                "createdTime": 1788248913,
+                "entryPrice": "70000.00",
+                "leverage": "10.00",
+                "liquidationPrice": "63456.78",
+                "marketMint": "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",
+                "markPrice": "68000.00",
+                "pnlAfterFeesUsd": "-2941.42",
+                "positionPubkey": "SyntheticPosition111111111111111111111",
+                "side": "long",
+                "size": "100000.00",
+            },
+            {
+                "borrowFeesUsd": "5.00",
+                "collateral": "5000.00",
+                "collateralMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "createdTime": 1788248913,
+                "entryPrice": "70000.00",
+                "leverage": "10.00",
+                "liquidationPrice": "77000.00",
+                "marketMint": "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",
+                "markPrice": "68000.00",
+                "pnlAfterFeesUsd": "-100.00",
+                "positionPubkey": "SyntheticShort11111111111111111111111",
+                "side": "short",
+                "size": "50000.00",
+            },
+        ]
+    }
+    pool_body = {
+        "longBorrowRatePercent": "0.0013",
+        "shortBorrowRatePercent": "0.0007",
+    }
+
+    def route(request):
+        url = str(request.url)
+        if "pool-info" in url:
+            return _httpx.Response(200, json=pool_body)
+        if "perps-api.jup.ag" in url:
+            return _httpx.Response(200, json=api_body)
+        return _httpx.Response(404)
+
+    client = _httpx.AsyncClient(transport=_httpx.MockTransport(route))
+    try:
+        adapter = JupiterAdapter(client=client, now_s=adapter_now_s)
+        positions = await adapter.get_positions("SyntheticWallet1111111111111111111111")
+    finally:
+        await client.aclose()
+
+    by_side = {p.side: p for p in positions}
+    assert by_side["long"].current_funding_rate_8h_bps == Decimal("-1.04")
+    assert by_side["short"].current_funding_rate_8h_bps == Decimal("-0.56")
+
+
 async def test_perps_api_failure_falls_back_to_on_chain(replay_client, adapter_now_s):
     """A 404/5xx from perps-api must not blank out on-chain positions.
 

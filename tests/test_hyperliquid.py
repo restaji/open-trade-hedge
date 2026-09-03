@@ -313,6 +313,35 @@ async def test_quote_funding_sign_flips_with_side(replay_client):
     assert short.funding_rate_8h_bps == -long.funding_rate_8h_bps
 
 
+async def test_quote_uses_predicted_funding_not_last_settled(replay_client, fixture):
+    """metaAndAssetCtxs is the rate a hedge opened now accrues.
+
+    Recorded BTC predicted = 0.0000125/h → 1 bps/8h. The last
+    fundingHistory tick is -0.0000005729 → -0.045832 bps/8h. Using the
+    settled tick would mis-compare Hyperliquid against Avantis (which
+    tracks the current external rate).
+    """
+    ctxs = fixture("hyperliquid/meta_and_asset_ctxs.json")
+    universe, funding_ctxs = ctxs
+    predicted = None
+    for row, ctx in zip(universe["universe"], funding_ctxs):
+        if row["name"] == "BTC":
+            predicted = Decimal(str(ctx["funding"]))
+            break
+    assert predicted == Decimal("0.0000125")
+
+    history = fixture("hyperliquid/funding_history_btc.json")
+    settled = Decimal(str(history[-1]["fundingRate"]))
+    assert settled != predicted
+
+    adapter = HyperliquidAdapter(
+        client=replay_client, api_url="https://api.hyperliquid.xyz/info"
+    )
+    short = await adapter.get_quote("BTC", "short", Decimal(10_000))
+    assert short.funding_rate_8h_bps == predicted * Decimal(8) * Decimal(10_000)
+    assert short.funding_rate_8h_bps != settled * Decimal(8) * Decimal(10_000)
+
+
 async def test_quote_unlisted_asset(replay_client):
     adapter = HyperliquidAdapter(
         client=replay_client, api_url="https://api.hyperliquid.xyz/info"

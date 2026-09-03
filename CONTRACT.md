@@ -930,7 +930,8 @@ from `https://data.avantisfi.com/v2/trading` (identical JSON to
 `prod-api.avantisfi.com/data/v2/trading`). `_INCLUDE_MARGIN_FEE_IN_CARRY = True`.
 `AvantisQuote.borrow_rate_8h_bps` is live `marginFee.<side>` converted to
 bps/8h. Web Avantis 24h / Avantis APR / Net APR use holder-signed
-`fundingRate − marginFee`. Jupiter borrow stays out of Net APR (§12.12).
+`fundingRate − marginFee`. Jupiter borrow is folded in as source funding
+(§12.12).
 
 **Was (2026-08-31).** The tool zeroed `marginFee` at Quote construction because
 the API still published non-zero rates after an on-chain funding-only shift.
@@ -1101,20 +1102,33 @@ fields sit at 0 together). `marginFee` is included in carry again (see §12.9 re
 **Decision (user-directed, 2026-09-02).** The paste-an-address UI no longer
 headlines a 24-hour all-in hedge cost and no longer shows Avantis Upside.
 
-1. **Net APR** replaces the `Hedge 24h` column. It is Avantis **net** rate
-   (holder-signed `fundingRate − marginFee`, matching the UI
-   Net Rate (L/S) 24h) minus the other venue's funding, annualised
-   `bps/8h × 8760/8 / 100` = `bps/8h × 10.95`. Jupiter borrow is not in
-   this rate.
-2. **Earn 24h** is that net 8h rate over three periods on current notional
-   (`notional × net_8h_bps × 3 / 10_000`). Positive means the paired book
-   is paid to hold over the next day.
-3. **Even in** is how long that net, after Jupiter borrow, takes to repay
-   Avantis open fee, close fee, and both spread legs:
-   `cover_bps × 8 / (net_8h_bps − source_borrow_8h_bps)`. Jupiter's paying
-   rate is `longBorrowRatePercent` / `shortBorrowRatePercent` from
-   `GET /v1/pool-info?mint=` (the 0.0013%/hr header on jup.ag/perps).
-   `None` / "never" when that recoup rate is not a receive.
+**Label (refined 2026-09-02):** every venue's holding cost is one
+**funding** number, holder-signed (green + = receive). Avantis
+`fundingRate + marginFee` (UI Net Rate) is that number — not two lines.
+Jupiter borrow and Ostium rollover are that number — not "0 funding +
+borrow". Source APR includes Jupiter borrow; it is no longer 0.00% on a
+Jupiter book. Do not reprint Avantis's venue-wire sign (positive = that
+side *pays*) — that painted a pay rate green.
+
+Jupiter per-side rates stay live from `pool-info`: BTC long
+`longBorrowRatePercent` (0.0013%/hr), BTC short `shortBorrowRatePercent`
+(0.0007%/hr). Do not stamp the long rate onto a short.
+
+The adapter schema is unchanged (`Quote.funding_rate_8h_bps = 0` on
+Jupiter is still the real value; borrow lives in `borrow_rate_8h_bps`).
+The web layer folds them for display and for Source / Net APR.
+
+1. **Net APR** replaces the `Hedge 24h` column. It is source funding plus
+   Avantis funding, money-in (positive = receive), annualised
+   `bps/8h × 10.95`. Avantis funding = `fundingRate − marginFee`. Jupiter
+   funding = `−borrow`.
+2. **Earn 24h** is that net over three 8h periods on current notional.
+   Both panes print `Funding` as holder-signed %/h (Avantis 8 dp, others
+   4 dp) and Avantis `Funding 24h` in USD.
+3. **Even in** is how long that same net takes to repay Avantis open, close,
+   and both spread legs: `cover_bps × 8 / net_8h_bps`. `None` / "never"
+   when the net is not a receive. Box: Avantis funding, source funding,
+   Holder 1h = sum.
 4. **Avantis Upside is removed from the scan UI.** The scanner no longer
    fetches `quote_upside_hedge` per row. CLI ranking and `quote_upside_hedge`
    itself are unchanged (§12.4).

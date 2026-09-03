@@ -1,9 +1,13 @@
-"""Lightweight web UI for the hedge scanner.
+"""Read-only perps portfolio and hedge-quote API, plus the React UI.
 
-Run:  cd hedge-scanner && uv run python -m hedge_scanner.web
+Run API:     cd hedge-scanner && uv run python -m hedge_scanner.web
+Run UI dev:  cd hedge-scanner/frontend && npm run dev
+             (proxies /api to :8000; open http://127.0.0.1:5173)
+Build UI:    cd hedge-scanner/frontend && npm run build
+             then the API process serves the SPA at /
 
 Serves:
-  GET  /            → single-page app (HTML embedded below)
+  GET  /            → React SPA (hedge_scanner/static)
   GET  /api/health  → liveness probe
   GET  /api/prices  → per-venue mark prices (UI poll)
   GET  /api/scan    → ?addresses=<addr>[,<addr>…]
@@ -15,12 +19,14 @@ from __future__ import annotations
 import asyncio
 import os
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from hedge_scanner import portfolio
@@ -35,7 +41,13 @@ from hedge_scanner.adapters import (
 )
 from hedge_scanner.adapters.base import make_http_client
 from hedge_scanner.assets import normalize_base_asset
-from hedge_scanner.engine import FEE_SCHEDULE, format_horizon
+from hedge_scanner.engine import (
+    DEFAULT_DUST_USD,
+    FEE_SCHEDULE,
+    format_horizon,
+    net_exposures,
+    self_hedge_findings,
+)
 from hedge_scanner.hedge_venues import avantis
 from hedge_scanner.liquidation import (
     LIQUIDATION_SPECS,
@@ -80,8 +92,8 @@ app.add_middleware(
 )
 
 # CONTRACT.md section 7.5.3 — CLI ranking still defaults to 24h. The web UI
-# headlines net APR / 24h earn from funding, with Avantis marginFee included
-# so the Avantis 24h line matches the UI Net Rate (L/S) 24h.
+# headlines net APR / 24h earn from all-in funding (Avantis Net Rate =
+# funding+marginFee; Jupiter borrow counted as funding).
 HORIZON_HOURS = Decimal(24)
 _HOURS_PER_YEAR = Decimal(8760)
 _HOURS_PER_8H = Decimal(8)
@@ -102,30 +114,44 @@ def hedge_funding_spread(
     cover_bps: Decimal = Decimal(0),
     source_borrow_8h_bps: Decimal = Decimal(0),
     hedge_borrow_8h_bps: Decimal = Decimal(0),
+    source_notional_usd: Decimal | None = None,
 ) -> dict[str, Decimal | None]:
     """Net of keeping the source position and opening the Avantis hedge.
 
-    Source funding is holder-signed (positive = receive). Avantis hedge
-    funding is the same. Avantis ``marginFee`` is a cost (``hedge_borrow``)
-    so the Avantis 24h matches the UI Net Rate: (fundingRate + marginFee)×24.
-    Jupiter borrow is not in Net APR; it only lengthens even-in via
-    ``source_borrow_8h_bps``.
+    Each venue's holding cost is one **funding** number, holder-signed
+    (positive = receive):
+
+    * Avantis = ``fundingRate − marginFee`` (same as UI Net Rate, flipped
+      so + is money in). ``marginFee`` is not shown separately.
+    * Jupiter / Ostium = ``−borrow`` / ``−rollover``. Those venues have no
+      two-sided funding; the borrow/rollover *is* the funding leg.
+    * Other venues = their live funding; borrow is 0.
+
+    ``net_8h = source_all_in + hedge_all_in``.
+    ``source_usd_24h`` / ``hedge_usd_24h`` / ``earn_usd_24h`` are accrued
+    carry only (funding, marginFee, borrow/rollover) — never open, close,
+    or spread. ``source_notional_usd`` defaults to the hedge notional.
     """
-    hedge_net = hedge_funding_8h_bps - hedge_borrow_8h_bps
-    net_8h = source_funding_8h_bps + hedge_net
-    recoup_8h = net_8h - source_borrow_8h_bps
-    source_apr = apr_pct_from_8h_bps(source_funding_8h_bps)
-    hedge_apr = apr_pct_from_8h_bps(hedge_net)
-    if recoup_8h > 0:
-        breakeven: Decimal | None = cover_bps * _HOURS_PER_8H / recoup_8h
+    source_all_in = source_funding_8h_bps - source_borrow_8h_bps
+    hedge_all_in = hedge_funding_8h_bps - hedge_borrow_8h_bps
+    net_8h = source_all_in + hedge_all_in
+    source_apr = apr_pct_from_8h_bps(source_all_in)
+    hedge_apr = apr_pct_from_8h_bps(hedge_all_in)
+    src_n = source_notional_usd if source_notional_usd is not None else notional_usd
+    source_usd_24h = src_n * source_all_in * _PERIODS_PER_24H / _BPS_DENOM
+    hedge_usd_24h = notional_usd * hedge_all_in * _PERIODS_PER_24H / _BPS_DENOM
+    if net_8h > 0:
+        breakeven: Decimal | None = cover_bps * _HOURS_PER_8H / net_8h
     else:
         breakeven = None
     return {
         "source_apr_pct": source_apr,
         "hedge_apr_pct": hedge_apr,
-        "net_apr_pct": source_apr + hedge_apr,
+        "net_apr_pct": apr_pct_from_8h_bps(net_8h),
         "net_8h_bps": net_8h,
-        "earn_usd_24h": notional_usd * net_8h * _PERIODS_PER_24H / _BPS_DENOM,
+        "source_usd_24h": source_usd_24h,
+        "hedge_usd_24h": hedge_usd_24h,
+        "earn_usd_24h": source_usd_24h + hedge_usd_24h,
         "cover_bps": cover_bps,
         "cover_usd": notional_usd * cover_bps / _BPS_DENOM,
         "breakeven_hours": breakeven,
@@ -138,6 +164,85 @@ def hedge_funding_spread(
 
 def _d(v: Decimal | None) -> float | None:
     return float(v) if v is not None else None
+
+
+def _hedge_plan(
+    positions: list[Any],
+) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    """Quote Avantis on residual net only when the book is already offset.
+
+    Same-asset longs and shorts are a SelfHedgeFinding (HEDGE_LOGIC.md §1).
+    Opening a second full-size Avantis hedge on each leg would add exposure,
+    not flatten it. Offsetting legs stay visible; only ``|net|`` is priced.
+    """
+    if not positions:
+        return {}, []
+    material, dust = net_exposures(positions)
+    exposures = list(material) + list(dust)
+    findings = self_hedge_findings(exposures)
+    by_asset = {e.base_asset: e for e in exposures}
+
+    carriers: dict[str, Any] = {}
+    for finding in findings:
+        exposure = by_asset[finding.base_asset]
+        if (
+            exposure.net_direction == "flat"
+            or exposure.abs_net_notional_usd < DEFAULT_DUST_USD
+        ):
+            continue
+        residual_side = exposure.net_direction
+        candidates = [
+            p
+            for p in positions
+            if (p.base_asset or "").strip().upper() == finding.base_asset
+            and p.side == residual_side
+        ]
+        if candidates:
+            carriers[finding.base_asset] = max(
+                candidates, key=lambda p: abs(p.notional_usd)
+            )
+
+    plan: dict[int, dict[str, Any]] = {}
+    for pos in positions:
+        asset = (pos.base_asset or "").strip().upper()
+        exposure = by_asset.get(asset)
+        default_side = "short" if pos.side == "long" else "long"
+        if exposure is None or not exposure.is_self_hedged:
+            plan[id(pos)] = {
+                "role": "full",
+                "hedge_side": default_side,
+                "hedge_notional": abs(pos.notional_usd),
+            }
+            continue
+        if carriers.get(asset) is pos:
+            plan[id(pos)] = {
+                "role": "residual",
+                "hedge_side": exposure.hedge_side,
+                "hedge_notional": exposure.abs_net_notional_usd,
+            }
+        else:
+            plan[id(pos)] = {
+                "role": "offsetting",
+                "hedge_side": default_side,
+                "hedge_notional": Decimal(0),
+            }
+    return plan, [_finding_to_dict(f) for f in findings]
+
+
+def _finding_to_dict(finding: Any) -> dict[str, Any]:
+    return {
+        "base_asset": finding.base_asset,
+        "long_notional_usd": _d(finding.long_notional_usd),
+        "short_notional_usd": _d(finding.short_notional_usd),
+        "net_notional_usd": _d(finding.net_notional_usd),
+        "offsetting_notional_usd": _d(finding.offsetting_notional_usd),
+        "gross_net_gap_usd": _d(finding.gross_net_gap_usd),
+        "long_venues": list(finding.long_venues),
+        "short_venues": list(finding.short_venues),
+        "unwind_fee_bps": _d(finding.unwind_fee_bps),
+        "unwind_fee_usd": _d(finding.unwind_fee_usd),
+        "fully_offset": finding.fully_offset,
+    }
 
 
 def _pos_to_dict(p: Any) -> dict:
@@ -313,6 +418,7 @@ async def _enrich_avantis(
             cover_bps=cover_bps,
             source_borrow_8h_bps=Decimal(str(sc.get("borrow_8h_bps") or 0)),
             hedge_borrow_8h_bps=Decimal(str(quote.borrow_rate_8h_bps or 0)),
+            source_notional_usd=abs(pos.notional_usd),
         )
         entry["hedge_funding"] = {key: _d(value) for key, value in spread.items()}
 
@@ -362,6 +468,9 @@ async def _run_scan(addresses: list[str]):
     # (venue, base_asset, side)) BEFORE the Avantis quote pass, so we only pay
     # the ~1.4s Avantis latency for positions that already pass the filter.
     carry_map = await _source_carry_map(positions)
+    # Net longs vs shorts on the full open book, not the paying subset, so a
+    # receiving short still offsets a paying long.
+    hedge_plan, self_hedge = _hedge_plan(positions)
 
     results: list[dict[str, Any]] = []
     filtered_out = {"not_hedgeable": 0, "not_paying": 0, "no_carry_data": 0}
@@ -390,11 +499,22 @@ async def _run_scan(addresses: list[str]):
             filtered_out["not_paying"] += 1
             continue
 
+        spec = hedge_plan.get(id(pos), {
+            "role": "full",
+            "hedge_side": "short" if pos.side == "long" else "long",
+            "hedge_notional": abs(pos.notional_usd),
+        })
+        hedge_side = spec["hedge_side"]
+        hedge_notional = Decimal(spec["hedge_notional"])
+        pos_notional = abs(pos.notional_usd)
+
         entry = _pos_to_dict(pos)
         entry["can_hedge_on_avantis"] = True
-
-        hedge_side = "short" if pos.side == "long" else "long"
         entry["hedge_side"] = hedge_side
+        entry["hedge_role"] = spec["role"]
+        entry["hedge_notional_usd"] = (
+            _d(hedge_notional) if spec["role"] != "offsetting" else None
+        )
         entry["avantis_quote"] = None
         entry["avantis_liq"] = None
         entry["avantis_unavailable"] = None
@@ -405,9 +525,9 @@ async def _run_scan(addresses: list[str]):
             "funding_8h_bps": _d(funding_bps),
             "borrow_8h_bps": _d(borrow_bps),
             "net_8h_bps": _d(net_bps),
+            "usd_24h": _d(pos_notional * net_bps * _PERIODS_PER_24H / _BPS_DENOM),
         }
 
-        notional = abs(float(pos.notional_usd))
         mark = float(pos.mark_price) if pos.mark_price else float(pos.entry_price)
         lev = float(pos.leverage) if pos.leverage else 1.0
 
@@ -431,12 +551,22 @@ async def _run_scan(addresses: list[str]):
                 pos.venue, pos.side, pos.entry_price, pos.leverage or Decimal(1),
                 pos.notional_usd,
             )
-            if src_risk:
+            venue_liq = pos.liquidation_price
+            if src_risk or venue_liq is not None:
+                # Venue liq is canonical when present (CONTRACT.md §12.13).
+                # The static model still supplies the penalty shape.
                 entry["source_liq"] = {
-                    "liq_price": _d(src_risk.liq_price),
-                    "distance_pct": _d(src_risk.distance_pct),
-                    "penalty_usd": _d(src_risk.penalty_usd),
-                    "penalty_bps": _d(src_risk.penalty_bps),
+                    "liq_price": _d(
+                        venue_liq if venue_liq is not None
+                        else (src_risk.liq_price if src_risk else None)
+                    ),
+                    "distance_pct": (
+                        entry["liq_distance_pct"]
+                        if venue_liq is not None
+                        else (_d(src_risk.distance_pct) if src_risk else None)
+                    ),
+                    "penalty_usd": _d(src_risk.penalty_usd) if src_risk else None,
+                    "penalty_bps": _d(src_risk.penalty_bps) if src_risk else None,
                     "cross_margin_risk": src_spec.cross_margin_risk,
                     "model": src_spec.liquidation_model,
                 }
@@ -451,7 +581,10 @@ async def _run_scan(addresses: list[str]):
                 "model": "cross_margin",
             }
 
-        avantis_targets.append((entry, pos, hedge_side, notional))
+        if spec["role"] != "offsetting" and hedge_notional >= DEFAULT_DUST_USD:
+            avantis_targets.append(
+                (entry, pos, hedge_side, float(hedge_notional))
+            )
         results.append(entry)
 
     if avantis_targets:
@@ -496,6 +629,7 @@ async def _run_scan(addresses: list[str]):
             "not_paying_funding": filtered_out["not_paying"],
             "no_carry_data": filtered_out["no_carry_data"],
         },
+        "self_hedge_findings": self_hedge,
     }
 
 
@@ -550,624 +684,49 @@ async def api_prices():
 
 
 # ---------------------------------------------------------------------------
-# Frontend
+# Frontend (React SPA in hedge_scanner/static)
 # ---------------------------------------------------------------------------
 
-HTML = """<!DOCTYPE html>
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+_INDEX = _STATIC_DIR / "index.html"
+
+_DEV_SHELL = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hedge Scanner</title>
 <style>
-  :root {
-    --bg:    #12110f;
-    --bg2:   #191815;
-    --rule:  #2b2924;
-    --rule2: #201e1a;
-    --ink:   #ece9e2;
-    --ink2:  #a49f95;
-    --ink3:  #6f6a61;
-    --up:    #6f9f6b;
-    --down:  #c4695a;
-    --warn:  #bf9a2f;
-    --mono:  ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-    --display: "Helvetica Neue", Inter, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html { color-scheme: dark; }
-  body {
-    background: var(--bg); color: var(--ink);
-    font: 12.5px/1.55 var(--mono);
-    font-variant-numeric: tabular-nums;
-    -webkit-font-smoothing: antialiased;
-  }
-  .wrap { max-width: 1260px; margin: 0 auto; padding: 56px 28px 90px; }
-
-  /* Masthead */
-  .mast { padding-bottom: 22px; border-bottom: 1px solid var(--rule); }
-  h1 { font: 600 46px/1.04 var(--display); letter-spacing: -.03em; }
-  .sub { margin-top: 11px; color: var(--ink3); font-size: 12px; }
-
-  /* Search */
-  .search { display: flex; align-items: center; gap: 14px; margin-top: 22px;
-            border-bottom: 1px solid var(--rule); padding-bottom: 9px; }
-  .search:focus-within { border-bottom-color: var(--ink3); }
-  .search input { flex: 1; background: none; border: 0; outline: 0;
-                  color: var(--ink); font: 14px var(--mono); padding: 2px 0; }
-  .search input::placeholder { color: var(--ink3); }
-  .search button { background: none; border: 0; cursor: pointer; padding: 4px 0;
-                   color: var(--ink2); font: 11px var(--mono);
-                   letter-spacing: .12em; text-transform: uppercase; }
-  .search button:hover { color: var(--ink); }
-  .search button:disabled { color: var(--ink3); cursor: default; }
-
-  /* Lede + stats */
-  .lede { font: 400 18px/1.4 var(--display); letter-spacing: -.01em;
-          max-width: 64ch; margin-top: 34px; }
-  .lede em { font-style: normal; color: var(--up); }
-  .stats { display: flex; flex-wrap: wrap; gap: 4px 30px; margin-top: 16px; }
-  .stats div { font-size: 10px; letter-spacing: .11em; text-transform: uppercase;
-               color: var(--ink3); }
-  .stats b { font: 400 12.5px var(--mono); letter-spacing: 0; text-transform: none;
-             color: var(--ink2); margin-left: 7px; }
-  .stats b.up { color: var(--up); }
-  .stats b.down { color: var(--down); }
-
-  /* Table */
-  .scroll { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; margin-top: 28px; }
-  th { font-size: 10px; letter-spacing: .11em; text-transform: uppercase;
-       color: var(--ink3); font-weight: 400; text-align: right;
-       padding-bottom: 9px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
-  td { padding: 9px 0; text-align: right; white-space: nowrap;
-       border-bottom: 1px solid var(--rule2); }
-  th:first-child, td:first-child { text-align: left; }
-  th:nth-child(2), tbody td:nth-child(2) { text-align: left; padding-left: 26px; }
-  th + th, tbody td + td { padding-left: 20px; }
-  tr.row { cursor: pointer; }
-  tr.row:hover > td { background: var(--bg2); }
-  tr.row.open > td { background: var(--bg2); border-bottom-color: transparent; }
-
-  .sym { letter-spacing: .02em; }
-  .side { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; margin-left: 9px; }
-  .caret { color: var(--ink3); margin-right: 9px; display: inline-block; width: 7px; }
-  .up { color: var(--up); }
-  .down { color: var(--down); }
-  .warn { color: var(--warn); }
-  .dim { color: var(--ink3); }
-  .mut { color: var(--ink2); }
-
-  /* Expanded detail */
-  tr.detail > td { background: var(--bg2); padding: 14px 0 20px; white-space: normal;
-                   border-bottom: 1px solid var(--rule); }
-  .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 0 32px; }
-  .panes.with-even { grid-template-columns: 1fr 1fr minmax(220px, 260px); }
-  @media (max-width: 980px) {
-    .panes, .panes.with-even { grid-template-columns: 1fr; }
-  }
-  .pane h4 { font: 400 10px var(--mono); letter-spacing: .11em; text-transform: uppercase;
-             color: var(--ink3); padding-bottom: 9px; margin-bottom: 8px;
-             border-bottom: 1px solid var(--rule2); }
-  .kv { display: flex; justify-content: space-between; gap: 20px; padding: 2.5px 0; }
-  .kv > span:first-child { color: var(--ink3); }
-  .kv.total { margin-top: 7px; padding-top: 8px; border-top: 1px solid var(--rule2); }
-  .kv.total > span:first-child { color: var(--ink2); }
-  .note { color: var(--ink3); font-size: 11.5px; line-height: 1.6; margin-top: 12px;
-          max-width: 52ch; }
-
-  /* Even-in calculation, beside the Avantis funding pane */
-  .even-box {
-    border: 1px solid var(--rule);
-    padding: 12px 14px 14px;
-    align-self: start;
-  }
-  .even-box h4 { margin-bottom: 4px; padding-bottom: 8px; }
-  .even-head { font: 600 28px/1.05 var(--display); letter-spacing: -.03em; margin: 2px 0 6px; }
-  .even-why { color: var(--ink3); font-size: 11.5px; line-height: 1.5; margin-bottom: 2px; }
-  .even-sec {
-    font: 400 10px var(--mono); letter-spacing: .11em; text-transform: uppercase;
-    color: var(--ink3); margin: 12px 0 4px; padding-top: 10px;
-    border-top: 1px solid var(--rule2);
-  }
-  .even-trade {
-    display: block; margin-top: 14px; padding-top: 10px;
-    border-top: 1px solid var(--rule2);
-    font: 400 10px var(--mono); letter-spacing: .11em; text-transform: uppercase;
-    color: var(--ink2); text-decoration: none;
-  }
-  .even-trade:hover { color: var(--ink); }
-
-  /* Footnotes, errors, states */
-  .foot { margin-top: 18px; color: var(--ink3); font-size: 11px; line-height: 1.7; }
-  .aside { margin-top: 30px; padding-top: 14px; border-top: 1px solid var(--rule2);
-           color: var(--ink3); font-size: 11px; line-height: 1.8; }
-  /* Two asides can stack (hidden-rows summary + venue errors); one rule between
-     them is enough, otherwise it reads as two unrelated footers. */
-  .aside + .aside { margin-top: 10px; padding-top: 0; border-top: 0; }
-  .aside b { font-weight: 400; color: var(--ink2); }
-  .aside h5 { font: 400 10px var(--mono); letter-spacing: .11em; text-transform: uppercase;
-              color: var(--ink3); }
-  .state { margin-top: 36px; color: var(--ink2); }
+  body { background:#12110f; color:#ece9e2; font:13px/1.5 Inter, Helvetica, sans-serif;
+         max-width:40rem; margin:4rem auto; padding:0 1.5rem; }
+  code { font-family: ui-monospace, Menlo, monospace; color:#a49f95; }
 </style>
 </head>
 <body>
-<div class="wrap">
-
-  <header class="mast">
-    <h1>Hedge Scanner</h1>
-    <p class="sub">Open perps currently paying funding on venues Avantis can hedge.</p>
-  </header>
-
-  <div class="search">
-    <input id="addr" type="text" spellcheck="false" autocomplete="off"
-           placeholder="0x… or Solana address">
-    <button id="go">Scan</button>
-  </div>
-
-  <div id="out"></div>
-
-</div>
-
-<script>
-const $ = s => document.querySelector(s);
-let POSITIONS = [];     // live reference for price updates
-let POLL_ID = null;     // setInterval handle
-
-/* ---------- formatting ---------- */
-const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
-  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const nf = (n, d) => Number(n).toLocaleString('en-US',
-  {minimumFractionDigits: d, maximumFractionDigits: d});
-
-function usd(n, d) {
-  if (n == null) return '—';
-  const v = Number(n);
-  const dec = d != null ? d : (Math.abs(v) >= 1000 ? 0 : 2);
-  return (v < 0 ? '-$' : '$') + nf(Math.abs(v), dec);
-}
-function signedUsd(n) {
-  if (n == null) return '—';
-  const v = Number(n);
-  if (v === 0) return '$0';
-  const dec = Math.abs(v) >= 1000 ? 0 : 2;
-  return (v > 0 ? '+$' : '-$') + nf(Math.abs(v), dec);
-}
-function compactUsd(n) {
-  const v = Math.abs(Number(n || 0));
-  if (v >= 1e9) return '$' + nf(v / 1e9, 2) + 'B';
-  if (v >= 1e6) return '$' + nf(v / 1e6, 2) + 'M';
-  if (v >= 1e3) return '$' + nf(v / 1e3, 1) + 'K';
-  return '$' + nf(v, 2);
-}
-function price(n) {
-  if (n == null) return '—';
-  const v = Math.abs(Number(n));
-  return '$' + nf(n, v >= 100 ? 2 : v >= 1 ? 4 : 6);
-}
-const bps = (n, d) => n == null ? '—' : nf(n, d == null ? 1 : d) + ' bps';
-const pct = (n, d) => n == null ? '—' : nf(n, d == null ? 1 : d) + '%';
-const kv = (k, v) => '<div class="kv"><span>' + k + '</span><span>' + v + '</span></div>';
-function hoursLabel(h) {
-  if (h == null) return 'never';
-  const v = Number(h);
-  if (v === 0) return 'now';
-  if (v < 24) return nf(v, 1) + ' h';
-  if (v < 168) return nf(v / 24, 1) + ' d';
-  return nf(v / 168, 1) + ' w';
-}
-
-/* ---------- scan ---------- */
-async function scan() {
-  const raw = $('#addr').value.trim();
-  if (!raw) return;
-  const btn = $('#go');
-  btn.disabled = true;
-  btn.textContent = 'Scanning';
-  $('#out').innerHTML = '<div class="state">Scanning…</div>';
-  try {
-    const resp = await fetch('/api/scan', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({addresses: raw.split(/[,\\s]+/).filter(Boolean)}),
-    });
-    render(await resp.json());
-  } catch (e) {
-    $('#out').innerHTML = '<div class="state"><span class="down">The scanner did not respond.</span> ' + esc(e.message) + '</div>';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Scan';
-  }
-}
-$('#go').addEventListener('click', scan);
-$('#addr').addEventListener('keydown', e => { if (e.key === 'Enter') scan(); });
-
-/* ---------- render ---------- */
-function render(data) {
-  const positions = (data.positions || []).slice();
-  const errors = data.errors || [];
-  const filter = data.filter || null;
-
-  POSITIONS = positions;
-  if (POLL_ID) clearInterval(POLL_ID);
-
-  if (!positions.length) {
-    // Distinguish "wallet is empty" from "wallet has positions, none matched
-    // the filter" — the second is a very different action item.
-    const totalScanned = filter ? filter.total : 0;
-    const emptyMsg = totalScanned === 0
-      ? 'No open positions.'
-      : totalScanned + ' open position' + (totalScanned === 1 ? '' : 's') +
-        ', none currently paying funding on an Avantis-listed pair.';
-    $('#out').innerHTML =
-      '<div class="state">' + emptyMsg + '</div>' +
-      filterHtml(filter) + asideHtml(errors);
-    return;
-  }
-
-  // Highest net funding APR first — that is the earn the table headlines.
-  positions.sort((a, b) =>
-    ((b.hedge_funding && b.hedge_funding.net_apr_pct) || -1e9) -
-    ((a.hedge_funding && a.hedge_funding.net_apr_pct) || -1e9) ||
-    Math.abs(b.notional_usd || 0) - Math.abs(a.notional_usd || 0));
-
-  $('#out').innerHTML =
-    ledeHtml(positions) + statsHtml(positions) + tableHtml(positions) +
-    footHtml() + filterHtml(filter) + asideHtml(errors);
-
-  document.querySelectorAll('tr.row').forEach(row => {
-    row.addEventListener('click', () => {
-      const open = row.classList.toggle('open');
-      row.nextElementSibling.style.display = open ? '' : 'none';
-      row.querySelector('.caret').textContent = open ? '–' : '+';
-    });
-  });
-
-  POLL_ID = setInterval(pollPrices, 5000);
-  pollPrices();
-}
-
-function ledeHtml(ps) {
-  const n = ps.length;
-  const withHf = ps.filter(p => p.hedge_funding);
-  const earn = withHf.reduce((s, p) => s + (p.hedge_funding.earn_usd_24h || 0), 0);
-  const some = k => k === n ? '' : ' &mdash; ' + k + ' of ' + n;
-
-  let text;
-  if (withHf.length) {
-    text = (earn > 0
-      ? '<em>Earn</em> ' + usd(earn) + ' in 24h'
-      : 'Net funding ' + signedUsd(earn) + ' in 24h') +
-      ' hedging on Avantis' + some(withHf.length) + '.';
-  } else {
-    const why = ps.map(p => p.avantis_unavailable).filter(Boolean);
-    const same = why.length === ps.length && new Set(why).size === 1;
-    text = same ? esc(why[0]) : 'Paying funding on Avantis-listed pairs, not priceable right now.';
-  }
-  return '<p class="lede">' + text + '</p>';
-}
-
-function statsHtml(ps) {
-  const gross = ps.reduce((s, p) => s + Math.abs(p.notional_usd || 0), 0);
-  const pnl = ps.reduce((s, p) => s + (p.unrealized_pnl_usd || 0), 0);
-  const paid = ps.reduce((s, p) => s + (p.funding_paid_usd || 0), 0);
-  const earn = ps.reduce((s, p) => s + ((p.hedge_funding && p.hedge_funding.earn_usd_24h) || 0), 0);
-  const quoted = ps.filter(p => p.avantis_quote).length;
-  return '<div class="stats">' +
-    '<div>Positions<b>' + ps.length + '</b></div>' +
-    '<div>Notional<b>' + compactUsd(gross) + '</b></div>' +
-    '<div>PnL<b class="' + tone(pnl) + '">' + signedUsd(pnl) + '</b></div>' +
-    '<div>Funding<b class="' + tone(paid) + '">' + signedUsd(paid) + '</b></div>' +
-    '<div>Earn 24h<b class="' + tone(earn) + '">' + signedUsd(earn) + '</b></div>' +
-    '<div>Priced<b>' + quoted + ' / ' + ps.length + '</b></div>' +
-    '</div>';
-}
-
-const tone = v => v > 0 ? 'up' : v < 0 ? 'down' : 'dim';
-
-function tableHtml(ps) {
-  let h = '<div class="scroll"><table><thead><tr>' +
-    '<th>Market</th><th>Venue</th><th>Notional</th><th>Lev</th><th>Entry</th><th>Mark</th>' +
-    '<th>PnL</th><th>Funding</th><th>Liq</th>' +
-    '<th>Fees</th><th>Net APR</th><th>Earn 24h</th><th>Even in</th>' +
-    '</tr></thead><tbody>';
-  ps.forEach((p, i) => { h += rowHtml(p, i); });
-  return h + '</tbody></table></div>';
-}
-
-function rowHtml(p, i) {
-  const sideCls = p.side === 'long' ? 'up' : 'down';
-
-  const liqPrice = p.liquidation_price != null ? p.liquidation_price
-                 : (p.source_liq ? p.source_liq.liq_price : null);
-  const dist = p.liq_distance_pct != null ? p.liq_distance_pct
-             : (p.source_liq ? p.source_liq.distance_pct : null);
-  const liq = liqPrice == null ? '<span class="dim">—</span>'
-    : price(liqPrice) + (dist == null ? '' :
-        ' <span class="' + (dist < 10 ? 'down' : 'dim') + '">' + pct(dist) + '</span>');
-
-  const f = p.funding_paid_usd;
-  const funding = f == null ? '<span class="dim">—</span>'
-    : f < 0 ? '<span class="down">' + signedUsd(f) + '</span>'
-    : f > 0 ? '<span class="up">' + signedUsd(f) + '</span>'
-    : '<span class="dim">$0</span>';
-
-  const hf = p.hedge_funding;
-  const apr = hf
-    ? '<span class="' + tone(hf.net_apr_pct) + '">' + pct(hf.net_apr_pct, 1) + '</span>'
-    : '<span class="dim">—</span>';
-  const earn = hf
-    ? '<span class="' + tone(hf.earn_usd_24h) + '">' + signedUsd(hf.earn_usd_24h) + '</span>'
-    : '<span class="dim">' + (p.avantis_unavailable ? 'unavailable' : '—') + '</span>';
-
-  const even = hf
-    ? (hf.breakeven_hours == null
-        ? '<span class="dim">never</span>'
-        : hoursLabel(hf.breakeven_hours))
-    : '<span class="dim">—</span>';
-
-  const fees = hf
-    ? '<span class="mut">' + usd(hf.cover_usd) + '</span>'
-    : '<span class="dim">—</span>';
-
-  return '<tr class="row" data-i="' + i + '">' +
-    '<td><span class="caret">+</span><span class="sym">' + esc(p.base_asset) + '</span>' +
-      '<span class="side ' + sideCls + '">' + esc(p.side) + '</span></td>' +
-    '<td class="mut">' + esc(p.venue) + '</td>' +
-    '<td>' + usd(Math.abs(p.notional_usd)) + '</td>' +
-    '<td class="mut">' + (p.leverage ? nf(p.leverage, 1) + 'x' : '—') + '</td>' +
-    '<td class="mut">' + price(p.entry_price) + '</td>' +
-    '<td>' + price(p.mark_price) + '</td>' +
-    '<td class="' + tone(p.unrealized_pnl_usd) + '">' + signedUsd(p.unrealized_pnl_usd) + '</td>' +
-    '<td>' + funding + '</td>' +
-    '<td>' + liq + '</td>' +
-    '<td>' + fees + '</td>' +
-    '<td>' + apr + '</td>' +
-    '<td>' + earn + '</td>' +
-    '<td>' + even + '</td>' +
-    '</tr>' +
-    '<tr class="detail" style="display:none"><td colspan="13">' + detailHtml(p) + '</td></tr>';
-}
-
-function detailHtml(p) {
-  const sl = p.source_liq, q = p.avantis_quote;
-  const sc = p.source_carry;
-
-  let left = '<div class="pane"><h4>' + esc(p.venue) + ' &middot; ' + esc(p.market) + '</h4>';
-  left += kv('Size', p.size_base != null
-    ? nf(p.size_base, Math.abs(p.size_base) >= 1000 ? 2 : 4) + ' ' + esc(p.base_asset) : '—');
-  left += kv('Entry', price(p.entry_price));
-  left += kv('Collateral', usd(p.collateral_usd));
-  left += kv('Margin', esc(p.margin_mode || '—'));
-  if (sc) {
-    left += kv('Funding 8h', bps(sc.funding_8h_bps) +
-      (sc.funding_8h_bps > 0 ? ' <span class="up">received</span>'
-       : sc.funding_8h_bps < 0 ? ' <span class="down">paid</span>' : ''));
-    if (sc.borrow_8h_bps > 0) {
-      left += kv('Borrow 8h', bps(sc.borrow_8h_bps) +
-        ' <span class="down">paid</span>');
-    }
-  }
-  if (p.funding_paid_usd != null) {
-    left += kv('Paid to date', signedUsd(p.funding_paid_usd));
-  }
-  if (sl) {
-    const slLiq = sl.liq_price != null ? price(sl.liq_price) : '—';
-    const slDist = sl.distance_pct != null ? pct(sl.distance_pct, 2) : '—';
-    left += kv('Liquidation', slLiq + ' &middot; ' + slDist);
-    left += kv('Exposed', sl.cross_margin_risk === 'full_account'
-      ? '<span class="down">whole account</span>' : 'position only');
-  }
-  left += '</div>';
-
-  let right = '<div class="pane">';
-  if (q) {
-    const hf = p.hedge_funding;
-    right += '<h4>Avantis hedge &middot; ' + esc(q.side) + ' ' + esc(q.market) + '</h4>';
-    right += kv('Funding 8h', bps(q.funding_rate_8h_bps) +
-      (q.funding_rate_8h_bps > 0 ? ' <span class="up">received</span>'
-       : q.funding_rate_8h_bps < 0 ? ' <span class="down">paid</span>' : ''));
-    if (q.borrow_rate_8h_bps > 0) {
-      right += kv('Borrow 8h', bps(q.borrow_rate_8h_bps) +
-        ' <span class="down">paid</span>');
-    }
-    if (hf) {
-      right += kv('Source APR',
-        '<span class="' + tone(hf.source_apr_pct) + '">' + pct(hf.source_apr_pct, 1) + '</span>');
-      right += kv('Avantis APR',
-        '<span class="' + tone(hf.hedge_apr_pct) + '">' + pct(hf.hedge_apr_pct, 1) + '</span>');
-      right += '<div class="kv total"><span>Net APR</span><span class="' +
-        tone(hf.net_apr_pct) + '">' + pct(hf.net_apr_pct, 1) + ' &middot; ' +
-        signedUsd(hf.earn_usd_24h) + ' in 24h</span></div>';
-    }
-  } else if (p.can_hedge_on_avantis) {
-    right += '<h4>Avantis hedge &middot; ' + esc(p.hedge_side) + ' ' + esc(p.base_asset) + '</h4>';
-    right += '<p class="note">' + (p.avantis_unavailable
-      ? esc(p.avantis_unavailable) : 'No live quote for this size.') + '</p>';
-  } else {
-    right += '<h4>Avantis hedge</h4><p class="note">Not listed on Avantis.</p>';
-  }
-  right += '</div>';
-
-  const even = evenBoxHtml(p);
-  return '<div class="panes' + (even ? ' with-even' : '') + '">' +
-    left + right + even + '</div>';
-}
-
-function evenBoxHtml(p) {
-  const q = p.avantis_quote, hf = p.hedge_funding;
-  if (!q || !hf) return '';
-
-  const notional = Math.abs(p.notional_usd || 0);
-  const toUsd = b => notional * Number(b || 0) / 10000;
-  const openBps = q.open_fee_bps || 0;
-  const closeBps = q.close_fee_bps || 0;
-  const spreadBps = q.spread_bps || 0;
-  const openUsd = toUsd(openBps);
-  const closeUsd = toUsd(closeBps);
-  const spreadUsd = toUsd(spreadBps);
-  const feesUsd = hf.cover_usd != null ? hf.cover_usd : openUsd + closeUsd + spreadUsd;
-  const earn = hf.earn_usd_24h || 0;
-  const hours = hf.breakeven_hours;
-  const sc = p.source_carry || {};
-  const src24 = toUsd(sc.funding_8h_bps) * 3;
-  const borrow24 = toUsd(sc.borrow_8h_bps) * 3;
-  const hedgeNet8h = (q.funding_rate_8h_bps || 0) - (q.borrow_rate_8h_bps || 0);
-  const hedge24 = toUsd(hedgeNet8h) * 3;
-  const recoup = earn - borrow24;
-
-  const head = hours == null
-    ? '<span class="dim">never</span>'
-    : hoursLabel(hours);
-  const why = hours == null
-    ? 'Net after source borrow does not cover Avantis fees.'
-    : usd(feesUsd) + ' fees ÷ ' + usd(recoup) + ' / 24h';
-
-  let h = '<div class="pane even-box">';
-  h += '<h4>Even in</h4>';
-  h += '<div class="even-head">' + head + '</div>';
-  h += '<p class="even-why">' + why + '</p>';
-
-  h += '<div class="even-sec">Fees occurred</div>';
-  const tier = q.fee_tier && q.fee_tier !== 'n/a' ? ' <span class="mut">' + esc(q.fee_tier) + '</span>' : '';
-  h += kv('Open' + tier, usd(openUsd) + ' <span class="mut">' + bps(openBps) + '</span>');
-  h += kv('Close', usd(closeUsd) + ' <span class="mut">' + bps(closeBps) + '</span>');
-  h += kv('Spread', usd(spreadUsd) + ' <span class="mut">' + bps(spreadBps) + '</span>');
-  h += '<div class="kv total"><span>Total</span><span>' + usd(feesUsd) +
-    ' <span class="mut">' + bps(hf.cover_bps) + '</span></span></div>';
-
-  h += '<div class="even-sec">Funding / 24h</div>';
-  h += kv('Source', '<span class="' + tone(src24) + '">' + signedUsd(src24) + '</span>');
-  if (borrow24 > 0) {
-    h += kv('Borrow', '<span class="down">' + signedUsd(-borrow24) + '</span>');
-  }
-  h += kv('Avantis', '<span class="' + tone(hedge24) + '">' + signedUsd(hedge24) + '</span>');
-  h += '<div class="kv total"><span>Net</span><span class="' + tone(earn) + '">' +
-    signedUsd(earn) + '</span></div>';
-  h += '<a class="even-trade" href="' + esc(avantisTradeUrl(p)) +
-    '" target="_blank" rel="noopener noreferrer">Hedge on Avantis</a>';
-  return h + '</div>';
-}
-
-function avantisTradeUrl(p) {
-  const market = (p.avantis_quote && p.avantis_quote.market) || '';
-  const asset = market.indexOf('/') !== -1
-    ? market.replace('/', '-')
-    : (p.base_asset || '') + '-USD';
-  return 'https://www.avantisfi.com/trade?asset=' + encodeURIComponent(asset);
-}
-
-/* ---------- live price polling ---------- */
-function markFor(p, px) {
-  const venuePx = (px && px[p.venue]) || {};
-  if (p.market != null && venuePx[p.market] != null) return venuePx[p.market];
-  return venuePx[p.base_asset];
-}
-
-async function pollPrices() {
-  if (!POSITIONS.length) return;
-  try {
-    const resp = await fetch('/api/prices');
-    const data = await resp.json();
-    const px = data.prices || {};
-    let totalPnl = 0, totalNotional = 0;
-
-    POSITIONS.forEach((p, i) => {
-      const newMark = markFor(p, px);
-      if (newMark == null || !p.size_base) return;
-      p.mark_price = newMark;
-      p.notional_usd = p.size_base * newMark;
-      if (p.side === 'long') {
-        p.unrealized_pnl_usd = p.size_base * (newMark - p.entry_price);
-      } else {
-        p.unrealized_pnl_usd = p.size_base * (p.entry_price - newMark);
-      }
-
-      const row = document.querySelector('tr.row[data-i="' + i + '"]');
-      if (!row) return;
-      const cells = row.querySelectorAll('td');
-      // cols: 0=market, 1=venue, 2=notional, 3=lev, 4=entry, 5=mark, 6=unrealized,
-      // 7=funding, 8=liq, 9=fees, 10=net apr, 11=earn 24h, 12=even in
-      cells[2].textContent = usd(Math.abs(p.notional_usd));
-      cells[5].textContent = price(p.mark_price);
-      const pnl = p.unrealized_pnl_usd;
-      cells[6].className = tone(pnl);
-      cells[6].innerHTML = signedUsd(pnl);
-      if (p.hedge_funding) {
-        p.hedge_funding.cover_usd =
-          Math.abs(p.notional_usd) * p.hedge_funding.cover_bps / 10000;
-        p.hedge_funding.earn_usd_24h =
-          Math.abs(p.notional_usd) * p.hedge_funding.net_8h_bps * 3 / 10000;
-        cells[9].innerHTML =
-          '<span class="mut">' + usd(p.hedge_funding.cover_usd) + '</span>';
-        cells[11].innerHTML =
-          '<span class="' + tone(p.hedge_funding.earn_usd_24h) + '">' +
-          signedUsd(p.hedge_funding.earn_usd_24h) + '</span>';
-      }
-    });
-
-    // Update summary stats
-    POSITIONS.forEach(p => {
-      totalPnl += (p.unrealized_pnl_usd || 0);
-      totalNotional += Math.abs(p.notional_usd || 0);
-    });
-    const statEls = document.querySelectorAll('.stats div');
-    if (statEls[1]) statEls[1].querySelector('b').textContent = compactUsd(totalNotional);
-    if (statEls[2]) {
-      const b = statEls[2].querySelector('b');
-      b.className = tone(totalPnl);
-      b.textContent = signedUsd(totalPnl);
-    }
-    if (statEls[4]) {
-      const earn = POSITIONS.reduce((s, p) =>
-        s + ((p.hedge_funding && p.hedge_funding.earn_usd_24h) || 0), 0);
-      const b = statEls[4].querySelector('b');
-      b.className = tone(earn);
-      b.textContent = signedUsd(earn);
-    }
-  } catch (_) {}
-}
-
-function footHtml() {
-  return '<p class="foot">Earn 24h is net funding (source + Avantis) on current notional. ' +
-    'Fees occurred are Avantis open, close, and both spread legs — a one-time hurdle, ' +
-    'not in Earn 24h. Even in is that hurdle divided by net funding per hour. ' +
-    'Never means net funding is not a receive. Read-only.</p>';
-}
-
-function filterHtml(filter) {
-  if (!filter) return '';
-  const parts = [];
-  if (filter.not_paying_funding)
-    parts.push(filter.not_paying_funding + ' not paying funding');
-  if (filter.not_hedgeable_on_avantis)
-    parts.push(filter.not_hedgeable_on_avantis + ' not listed on Avantis');
-  if (filter.no_carry_data)
-    parts.push(filter.no_carry_data + ' no live rate');
-  if (!parts.length) return '';
-  return '<div class="aside"><h5>Hidden</h5><div>' +
-    filter.kept + ' of ' + filter.total + ' shown &middot; ' +
-    esc(parts.join(', ')) + '</div></div>';
-}
-
-function asideHtml(errors) {
-  // Server pre-filters `auth_required` (GRVT/Ondo) — those venues can't serve
-  // positions for a third-party address and every scan would surface the same
-  // useless "needs your API key" row. What remains here is genuinely
-  // actionable: transient venue outages, unsupported address namespaces, etc.
-  if (!errors.length) return '';
-  const rows = errors.map(e => '<div><b>' + esc(e.venue) + '</b> ' +
-    esc(e.message) + '</div>').join('');
-  return '<div class="aside"><h5>Not read</h5>' + rows + '</div>';
-}
-</script>
+<h1>Hedge Scanner</h1>
+<p>The React UI is not built yet.</p>
+<p>API is up. In another terminal:</p>
+<pre><code>cd frontend && npm install && npm run dev</code></pre>
+<p>Open <code>http://127.0.0.1:5173</code> (it proxies <code>/api</code> here).</p>
+<p>To serve the UI from this process: <code>npm run build</code> then reload.</p>
 </body>
-</html>"""
+</html>
+"""
+
+if _STATIC_DIR.is_dir() and (_STATIC_DIR / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="assets")
+
+_venues_dir = _STATIC_DIR / "static" / "venues"
+if _venues_dir.is_dir():
+    app.mount("/static/venues", StaticFiles(directory=_venues_dir), name="venue-icons")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return HTML
+    if _INDEX.is_file():
+        return FileResponse(_INDEX)
+    return HTMLResponse(_DEV_SHELL)
+
 
 
 if __name__ == "__main__":

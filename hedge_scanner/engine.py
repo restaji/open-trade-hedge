@@ -917,16 +917,26 @@ def self_hedge_findings(
             continue
 
         # Cost to unwind the redundant pair: the exit fee on both legs. Entry fees
-        # are already sunk and are not a decision input.
+        # are already sunk and are not a decision input. Same venue on both
+        # sides still pays twice — two isolated closes, not one.
         unverified = False
-        close_bps = ZERO
-        for venue in set(exposure.long_venues) | set(exposure.short_venues):
-            schedule = FEE_SCHEDULE.get(venue)
-            if schedule is None:
+
+        def _close_bps(venues: tuple[str, ...]) -> Decimal:
+            nonlocal unverified
+            for venue in venues:
+                schedule = FEE_SCHEDULE.get(venue)
+                if schedule is None:
+                    unverified = True
+                    continue
+                unverified = unverified or not schedule.verified
+                return schedule.close_fee_for(exposure.base_asset)
+            if venues:
                 unverified = True
-                continue
-            unverified = unverified or not schedule.verified
-            close_bps += schedule.close_fee_for(exposure.base_asset)
+            return ZERO
+
+        close_bps = _close_bps(exposure.long_venues) + _close_bps(
+            exposure.short_venues
+        )
 
         findings.append(
             SelfHedgeFinding(

@@ -618,6 +618,40 @@ class JupiterAdapter:
             raw=row,
         )
 
+    async def _annotate_borrow_as_funding(self, positions: list[Position]) -> None:
+        """Stamp holder-signed carry as ``current_funding_rate_8h_bps``.
+
+        Jupiter has no two-sided funding. The holder always pays borrow, so
+        this field is ``-borrow_8h_bps``. A failed pool-info fetch leaves
+        ``None`` (never a silent zero).
+        """
+        if not positions:
+            return
+        mint_by_asset = {
+            meta["base_asset"]: meta["mint"]
+            for meta in CUSTODIES.values()
+            if not meta["is_stable"]
+        }
+        mints = sorted({
+            mint_by_asset[p.base_asset]
+            for p in positions
+            if p.base_asset in mint_by_asset
+        })
+        if not mints:
+            return
+        pools = await asyncio.gather(*(self._fetch_pool_info(m) for m in mints))
+        pool_by_mint = dict(zip(mints, pools))
+        for position in positions:
+            mint = mint_by_asset.get(position.base_asset)
+            if not mint:
+                continue
+            borrow = self._borrow_8h_bps_from_pool_info(
+                pool_by_mint.get(mint), position.side
+            )
+            if borrow is None:
+                continue
+            position.current_funding_rate_8h_bps = -borrow
+
     async def get_positions(self, address: str) -> list[Position]:
         # Primary path: Jupiter's own perps API. Returns the exact numbers
         # jup.ag/portfolio displays. Fall through to on-chain decode only when
@@ -630,6 +664,7 @@ class JupiterAdapter:
                 pos = self._position_from_api(address, row)
                 if pos is not None:
                     positions.append(pos)
+            await self._annotate_borrow_as_funding(positions)
             return positions
 
         result = await self._rpc(
@@ -671,6 +706,7 @@ class JupiterAdapter:
             position = self._to_position(address, raw, custodies, marks)
             if position is not None:
                 positions.append(position)
+        await self._annotate_borrow_as_funding(positions)
         return positions
 
     def _to_position(

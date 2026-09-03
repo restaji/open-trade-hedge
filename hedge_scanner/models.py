@@ -39,6 +39,8 @@ class Position:
     # negative = holder is currently PAYING. `None` when the adapter cannot
     # supply a live rate (e.g. Jupiter has no funding mechanism at all).
     # Same sign as `funding_paid_usd` (cumulative history): + received, − paid.
+    # Jupiter has no two-sided funding; adapters stamp ``-borrow_rate_8h_bps``
+    # here so the Avantis funding gate sees the holder’s actual carry.
     current_funding_rate_8h_bps: Decimal | None = None
     margin_mode: str | None = None            # "cross" | "isolated"
     opened_at: datetime | None = None

@@ -300,6 +300,18 @@ class TestSelfHedgeFindings:
         assert finding.unwind_fee_usd == expected * D(50000) / D(10000)
         assert finding.fee_schedule_unverified is False
 
+    def test_same_venue_both_sides_pays_close_twice(self):
+        material, dust = net_exposures(
+            [
+                make_position("jupiter", "BTC", "long", "206000"),
+                make_position("jupiter", "BTC", "short", "211000"),
+            ]
+        )
+        (finding,) = self_hedge_findings(list(material) + list(dust))
+        assert finding.offsetting_notional_usd == D(206000)
+        assert finding.unwind_fee_bps == FEE_SCHEDULE["jupiter"].close_fee_bps * 2
+        assert finding.unwind_fee_usd == D("12") * D(206000) / D(10000)
+
     def test_partial_offset_is_flagged_but_not_fully_offset(self):
         material, _ = net_exposures(
             [
