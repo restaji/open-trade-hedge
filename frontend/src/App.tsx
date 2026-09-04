@@ -668,27 +668,12 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const poll = useRef<number | null>(null);
   const tick = useRef<number | null>(null);
-  const booted = useRef(false);
 
   useEffect(() => {
-    const q = new URLSearchParams(location.search).get("a");
-    let saved = "";
-    try {
-      saved = localStorage.getItem("hs.addr") || "";
-    } catch {
-      /* ignore */
-    }
-    const initial = q || saved;
-    booted.current = true;
-    if (initial) {
-      setAddr(initial);
-      void runScan(initial);
-    }
     return () => {
       if (poll.current) clearInterval(poll.current);
       if (tick.current) clearInterval(tick.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -766,14 +751,6 @@ export default function App() {
       });
       const json: ScanData = await resp.json();
       if (json.error) throw new Error(json.error);
-      try {
-        localStorage.setItem("hs.addr", trimmed);
-      } catch {
-        /* ignore */
-      }
-      const u = new URL(location.href);
-      u.searchParams.set("a", trimmed);
-      history.replaceState(null, "", u);
       const positions = (json.positions || []).slice().sort((a, b) => {
         const ao = a.hedge_role === "offsetting" ? 1 : 0;
         const bo = b.hedge_role === "offsetting" ? 1 : 0;
@@ -856,7 +833,7 @@ export default function App() {
   if (filter?.no_carry_data) hidden.push(filter.no_carry_data + " no rate");
 
   const stale = lastScanAt != null && now - lastScanAt > 60_000;
-  const showEmpty = booted.current && !addr.trim() && !scanning && !data && !error;
+  const showEmpty = !addr.trim() && !scanning && !data && !error;
   const showZero = data && !positions.length && !scanning;
 
   return (
