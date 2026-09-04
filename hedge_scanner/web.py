@@ -4,10 +4,10 @@ Run API:     cd hedge-scanner && uv run python -m hedge_scanner.web
 Run UI dev:  cd hedge-scanner/frontend && npm run dev
              (proxies /api to :8000; open http://127.0.0.1:5173)
 Build UI:    cd hedge-scanner/frontend && npm run build
-             then the API process serves the SPA at /
+             (writes public/; Vercel serves it at the edge)
 
 Serves:
-  GET  /            → React SPA (hedge_scanner/static)
+  GET  /            → React SPA (public/ at repo root)
   GET  /api/health  → liveness probe
   GET  /api/prices  → per-venue mark prices (UI poll)
   GET  /api/scan    → ?addresses=<addr>[,<addr>…]
@@ -95,6 +95,19 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def static_asset_headers(request, call_next):
+    """Vite tags assets with crossorigin; always emit ACAO for /assets and /static."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/") or path.startswith("/static/"):
+        response.headers.setdefault("Access-Control-Allow-Origin", "*")
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    elif path == "/":
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 # CONTRACT.md section 7.5.3 — CLI ranking still defaults to 24h. The web UI
 # headlines net APR / 24h earn from all-in funding (Avantis Net Rate =
@@ -696,10 +709,11 @@ async def api_prices():
 
 
 # ---------------------------------------------------------------------------
-# Frontend (React SPA in hedge_scanner/static)
+# Frontend (React SPA in public/ — Vercel serves this dir at the edge)
 # ---------------------------------------------------------------------------
 
-_STATIC_DIR = Path(__file__).resolve().parent / "static"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_STATIC_DIR = _PROJECT_ROOT / "public"
 _INDEX = _STATIC_DIR / "index.html"
 
 _DEV_SHELL = """<!DOCTYPE html>
