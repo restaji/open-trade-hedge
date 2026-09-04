@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Position, ScanData, SelfHedge } from "./types";
-import { VenueBadge, HedgeButton } from "./Venue";
+import { VenueBadge } from "./Venue";
 import {
   avantisRoundtripUsd,
   breakevenCellClass,
@@ -9,6 +9,7 @@ import {
   breakevenTooltip,
   computeBreakeven,
 } from "./breakeven";
+import { VerdictPanel } from "./verdict";
 import {
   aprFrom8h,
   bps,
@@ -22,7 +23,6 @@ import {
   tone,
   usd,
   fundingUsd24,
-  venueLabel,
   venueRatePctH,
 } from "./format";
 
@@ -101,11 +101,60 @@ const ASSET_NAMES: Record<string, string> = {
   DOGE: "Dogecoin",
   LINK: "Chainlink",
   ARB: "Arbitrum",
+  XAU: "Gold",
+  XAG: "Silver",
+  EURUSD: "EUR/USD",
+  GBPUSD: "GBP/USD",
+  AUDUSD: "AUD/USD",
+  NZDUSD: "NZD/USD",
+  USDJPY: "USD/JPY",
+  USDCAD: "USD/CAD",
+  USDCHF: "USD/CHF",
 };
 
+const ASSET_CLASS_LABEL: Record<string, string> = {
+  crypto: "Crypto",
+  commodity: "Commodities",
+  forex: "Forex",
+  equity: "Equities",
+  index: "Indices",
+};
+
+const FX_CCY = new Set([
+  "AUD",
+  "CAD",
+  "CHF",
+  "CNH",
+  "EUR",
+  "GBP",
+  "JPY",
+  "NZD",
+  "SEK",
+  "SGD",
+  "BRL",
+  "IDR",
+  "INR",
+  "KRW",
+  "MXN",
+  "TRY",
+  "TWD",
+  "ZAR",
+  "USD",
+]);
+
+function assetDisplayName(base: string): string {
+  const up = (base || "").toUpperCase();
+  if (ASSET_NAMES[up]) return ASSET_NAMES[up];
+  if (/^[A-Z]{6}$/.test(up) && FX_CCY.has(up.slice(0, 3)) && FX_CCY.has(up.slice(3))) {
+    return `${up.slice(0, 3)}/${up.slice(3)}`;
+  }
+  return base;
+}
+
 function marketSubtitle(p: Position): string {
-  const name = ASSET_NAMES[p.base_asset.toUpperCase()] || p.base_asset;
-  return `${name} · Crypto`;
+  const name = assetDisplayName(p.base_asset);
+  const klass = ASSET_CLASS_LABEL[(p.asset_class || "").toLowerCase()];
+  return klass ? `${name} · ${klass}` : name;
 }
 
 function sideLabel(side: string): string {
@@ -303,7 +352,6 @@ function PositionDetail({
       : q
         ? toUsd(openBps + closeBps + spreadBps)
         : f?.unwind_fee_usd ?? null;
-  const srcVenue = venueLabel(p.venue);
   const liqP = liqPriceOf(p);
   const entryJ = p.entry_price != null ? price(p.entry_price) : undefined;
   const liqJ = liqP != null ? price(liqP) : undefined;
@@ -313,7 +361,9 @@ function PositionDetail({
       <div className="detail">
         <div className="dgrid">
           <div className="dhead" />
-          <div className="dhead dval">{srcVenue}</div>
+          <div className="dhead dval dhead-venue">
+            <VenueBadge venue={p.venue} />
+          </div>
           <div className="dhead dval">Offset</div>
           <DetailSection title="Position">
             <DetailRow label="Long" jupiter={usd(f.long_notional_usd)} />
@@ -364,10 +414,15 @@ function PositionDetail({
 
   return (
     <div className="detail">
-      <div className="dgrid">
+      <div className="detail-main">
+        <div className="dgrid">
         <div className="dhead" />
-        <div className="dhead dval">{srcVenue}</div>
-        <div className="dhead dval">Avantis</div>
+        <div className="dhead dval dhead-venue">
+          <VenueBadge venue={p.venue} />
+        </div>
+        <div className="dhead dval dhead-venue">
+          <VenueBadge venue="avantis" />
+        </div>
 
         <DetailSection title="Position">
           <DetailRow label="Size" jupiter={sizeJ} avantis={sizeA} />
@@ -446,24 +501,18 @@ function PositionDetail({
           </div>
         )}
 
-        {showTrade && (
-          <div className="drow dact">
-            <div className="dlabel" />
-            <div className="dval" />
-            <div className="dval dval-act">
-              <HedgeButton
-                href={avantisTradeUrl(p)}
-                disabled={!hedgeable}
-                title={
-                  hedgeable
-                    ? undefined
-                    : "Net carry is negative — fees never recovered"
-                }
-              />
-            </div>
           </div>
-        )}
       </div>
+
+      {showTrade && roundtripUsd != null && (
+        <VerdictPanel
+          hedgeable={hedgeable}
+          be={be}
+          net24={net24}
+          roundtripUsd={roundtripUsd}
+          tradeUrl={avantisTradeUrl(p)}
+        />
+      )}
     </div>
   );
 }
@@ -869,7 +918,11 @@ export default function App() {
 
       {showZero && (
         <div className="panel empty">
-          <p>{filter?.total ? `${filter.total} open positions, none paying funding.` : "No positions found."}</p>
+          <p>
+            {filter?.total
+              ? `${filter.total} open positions` + (hidden.length ? ` · ${hidden.join(" · ")}` : ".")
+              : "No positions found."}
+          </p>
         </div>
       )}
 
@@ -956,7 +1009,7 @@ export default function App() {
           <h4>Not read</h4>
           {errors.map((e) => (
             <div key={e.venue}>
-              <span className="mut">{e.venue}</span> {e.message}
+              <VenueBadge venue={e.venue} /> {e.message}
             </div>
           ))}
         </div>

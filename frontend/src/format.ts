@@ -74,7 +74,17 @@ export function carryDailyUsd(n: number | null | undefined): string {
 
 export function venueLabel(v: string | null | undefined): string {
   const s = String(v || "source").toLowerCase();
-  return s.charAt(0).toUpperCase() + s.slice(1);
+  const labels: Record<string, string> = {
+    avantis: "Avantis",
+    grvt: "GRVT",
+    hyperliquid: "Hyperliquid",
+    jupiter: "Jupiter",
+    ondo: "Ondo Perps",
+    ostium: "Ostium",
+    pacifica: "Pacifica",
+    variational: "Variational",
+  };
+  return labels[s] ?? s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 export function usdFrom8hBps(

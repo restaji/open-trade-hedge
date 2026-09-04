@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import httpx
 
-from ..assets import normalize_base_asset
+from ..markets import canonical_base, same_asset
 from ..models import Position, Quote
 from .base import VenueUnavailableError, make_http_client, record_mark, walk_book
 
@@ -172,7 +172,7 @@ class PacificaAdapter:
             venue=self.venue,
             address=address,
             market=symbol,
-            base_asset=normalize_base_asset(symbol),
+            base_asset=canonical_base(symbol),
             quote_asset=QUOTE_ASSET,
             side=side,
             size_base=size_base,
@@ -195,10 +195,10 @@ class PacificaAdapter:
     async def get_quote(
         self, base_asset: str, side: str, notional_usd: Decimal
     ) -> Quote:
-        asset = normalize_base_asset(base_asset)
+        asset = canonical_base(base_asset)
         prices = await self._prices_by_symbol()
         symbol = next(
-            (s for s in prices if normalize_base_asset(s) == asset),
+            (s for s in prices if same_asset(s, asset)),
             None,
         )
         if symbol is None:

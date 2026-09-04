@@ -39,6 +39,7 @@ export type Position = {
   venue: string;
   market: string;
   base_asset: string;
+  asset_class?: string | null;
   side: string;
   size_base: number | null;
   notional_usd: number;

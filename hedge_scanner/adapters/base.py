@@ -14,6 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 import httpx
 
 from ..assets import normalize_base_asset
+from ..markets import canonical_base
 from ..models import Position, Quote
 
 
@@ -89,9 +90,12 @@ def record_mark(
     if not native or price is None or price <= 0:
         return
     out[native] = price
-    canonical = normalize_base_asset(native)
-    if canonical:
-        out.setdefault(canonical, price)
+    stripped = normalize_base_asset(native)
+    if stripped:
+        out.setdefault(stripped, price)
+    book = canonical_base(native)
+    if book:
+        out.setdefault(book, price)
 
 
 def walk_book(

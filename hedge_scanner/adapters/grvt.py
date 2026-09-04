@@ -23,7 +23,7 @@ from decimal import Decimal
 
 import httpx
 
-from ..assets import normalize_base_asset
+from ..markets import canonical_base, same_asset
 from ..models import Position, Quote
 from .base import (
     VenueRequiresAuthError,
@@ -135,7 +135,7 @@ class GrvtAdapter:
             row["instrument"]
             for row in instruments
             if row.get("kind") == "PERPETUAL"
-            and normalize_base_asset(row.get("base", "")) == asset
+            and same_asset(row.get("base", ""), asset)
         ]
         if not candidates:
             return None
@@ -146,7 +146,7 @@ class GrvtAdapter:
     async def get_quote(
         self, base_asset: str, side: str, notional_usd: Decimal
     ) -> Quote:
-        asset = normalize_base_asset(base_asset)
+        asset = canonical_base(base_asset)
         instrument = await self._instrument_for(asset)
         if instrument is None:
             return Quote(

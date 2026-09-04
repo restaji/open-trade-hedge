@@ -30,6 +30,7 @@ import base58
 import httpx
 
 from ..assets import normalize_base_asset
+from ..markets import canonical_base
 from ..models import Position, Quote
 from .base import VenueUnavailableError, make_http_client, record_mark
 
@@ -548,7 +549,9 @@ class JupiterAdapter:
         """
         mint = row.get("marketMint")
         meta = _ASSET_BY_MINT.get(mint) if mint else None
-        base_asset = meta["base_asset"] if meta else normalize_base_asset(mint or "")
+        base_asset = canonical_base(
+            meta["base_asset"] if meta else normalize_base_asset(mint or "")
+        )
         if not base_asset:
             return None
 
@@ -721,7 +724,7 @@ class JupiterAdapter:
         if custody is None:
             return None
         mint = custody["mint"]
-        base_asset = (
+        base_asset = canonical_base(
             custody_meta["base_asset"] if custody_meta else normalize_base_asset(mint)
         )
 
@@ -808,7 +811,7 @@ class JupiterAdapter:
     async def get_quote(
         self, base_asset: str, side: str, notional_usd: Decimal
     ) -> Quote:
-        asset = normalize_base_asset(base_asset)
+        asset = canonical_base(base_asset)
         market = f"{asset}-PERP"
         custody_pk = TRADABLE_CUSTODY_BY_ASSET.get(asset)
         if custody_pk is None:

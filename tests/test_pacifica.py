@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
+
 from hedge_scanner.adapters.pacifica import PacificaAdapter
 
 ACCOUNT = "5X8BEVZ8kQSNyRyMBNYWaBUCD3a4azTNn1vnYenML35f"
@@ -93,6 +95,28 @@ async def test_quote_is_unavailable_for_an_unlisted_asset(replay_client):
     adapter = PacificaAdapter(client=replay_client)
     quote = await adapter.get_quote("NOTATOKEN", "short", Decimal(1_000))
     assert quote.available is False
+
+
+@pytest.mark.parametrize(
+    "stamp,market,base",
+    [
+        ("EUR", "EURUSD", "EURUSD"),
+        ("EURUSD", "EURUSD", "EURUSD"),
+        ("EUR/USD", "EURUSD", "EURUSD"),
+        ("GOLD", "XAU", "XAU"),
+        ("XAU", "XAU", "XAU"),
+        ("PEPE", "kPEPE", "PEPE"),
+        ("WTI", "CL", "WTI"),
+        ("US500", "SP500", "US500"),
+        ("USD/JPY", "USDJPY", "USDJPY"),
+    ],
+)
+async def test_quote_resolves_aliased_stamps(replay_client, stamp, market, base):
+    adapter = PacificaAdapter(client=replay_client)
+    quote = await adapter.get_quote(stamp, "short", Decimal(10_000))
+    assert quote.available is True
+    assert quote.market == market
+    assert quote.base_asset == base
 
 
 async def test_health(replay_client):

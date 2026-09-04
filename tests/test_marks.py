@@ -135,6 +135,24 @@ async def test_ostium_marks_divide_last_trade_price(monkeypatch):
     assert marks["BTC/USD"] == Decimal("65000")
 
 
+async def test_ostium_fx_marks_do_not_collide_on_bare_eur(monkeypatch):
+    adapter = OstiumAdapter()
+    eur_usd = str(Decimal("1.08") * PRICE_PRECISION)
+    eur_gbp = str(Decimal("0.84") * PRICE_PRECISION)
+
+    async def fake_pairs():
+        return {
+            "2": {"from": "EUR", "to": "USD", "lastTradePrice": eur_usd},
+            "9": {"from": "EUR", "to": "GBP", "lastTradePrice": eur_gbp},
+        }
+
+    monkeypatch.setattr(adapter, "_get_pairs", fake_pairs)
+    marks = await adapter.get_marks()
+    assert marks["EURUSD"] == Decimal("1.08")
+    assert marks["EURGBP"] == Decimal("0.84")
+    assert "EUR" not in marks
+
+
 async def test_collect_marks_isolates_a_dead_venue(monkeypatch):
     class Boom:
         venue = "ostium"

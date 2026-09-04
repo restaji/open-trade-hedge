@@ -31,7 +31,7 @@ from decimal import Decimal
 
 import httpx
 
-from ..assets import normalize_base_asset
+from ..markets import canonical_base, same_asset
 from ..models import Position, Quote
 from .base import VenueUnavailableError, make_http_client, record_mark
 
@@ -75,6 +75,18 @@ def _dec(value: object) -> Decimal | None:
         return None
 
 
+def _hip3_dex(market: str) -> str | None:
+    """HIP-3 dex prefix from a namespaced market, or None for native coins."""
+    if ":" not in market:
+        return None
+    head, _, tail = market.partition(":")
+    if not tail:
+        return None
+    if 1 <= len(head) <= 8 and head.islower() and head.isalnum():
+        return head
+    return None
+
+
 class HyperliquidAdapter:
     venue = "hyperliquid"
     namespace = "evm"
@@ -92,10 +104,12 @@ class HyperliquidAdapter:
         self._owns_client = client is None
         self._timeout = timeout
         self._fee_cache: tuple[float, Decimal, Decimal, bool] | None = None
-        # (fetched_at, sub_dex_names). None means "never fetched".
-        self._perp_dexs_cache: tuple[float, tuple[str, ...]] | None = None
-        # (fetched_at, coin -> hourly funding fraction). Native DEX only.
-        self._funding_fracs_cache: tuple[float, dict[str, Decimal]] | None = None
+        # (fetched_at, sub_dex_names, HIP-3 market keys like xyz:GOLD).
+        self._perp_dexs_cache: (
+            tuple[float, tuple[str, ...], tuple[str, ...]] | None
+        ) = None
+        # dex-or-native -> (fetched_at, coin -> hourly funding fraction).
+        self._funding_fracs_by_dex: dict[str, tuple[float, dict[str, Decimal]]] = {}
 
     async def __aenter__(self) -> HyperliquidAdapter:
         return self
@@ -265,7 +279,7 @@ class HyperliquidAdapter:
             venue=self.venue,
             address=address,
             market=market,
-            base_asset=normalize_base_asset(market),
+            base_asset=canonical_base(market),
             quote_asset=QUOTE_ASSET,
             side=side,
             size_base=size_base,
@@ -291,27 +305,43 @@ class HyperliquidAdapter:
         a deployed sub-DEX with a lowercase short name that acts as the
         ``dex`` parameter for ``clearinghouseState``.
         """
+        names, _markets = await self._perp_dexs()
+        return names
+
+    async def _hip3_markets(self) -> tuple[str, ...]:
+        """Namespacing ``xyz:GOLD`` / ``xyz:BRENTOIL`` from ``perpDexs``."""
+        _names, markets = await self._perp_dexs()
+        return markets
+
+    async def _perp_dexs(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         if self._perp_dexs_cache is not None:
-            fetched_at, cached = self._perp_dexs_cache
+            fetched_at, names, markets = self._perp_dexs_cache
             if time.monotonic() - fetched_at < _PERP_DEXS_CACHE_TTL_S:
-                return cached
+                return names, markets
         try:
             data = await self._post({"type": "perpDexs"})
         except VenueUnavailableError:
             # If discovery fails we still return native-DEX positions, so
             # cache an empty list briefly rather than retrying on every call.
-            self._perp_dexs_cache = (time.monotonic(), ())
-            return ()
+            empty = (time.monotonic(), (), ())
+            self._perp_dexs_cache = empty
+            return (), ()
         names: list[str] = []
+        markets: list[str] = []
         if isinstance(data, list):
             for entry in data:
-                if isinstance(entry, dict):
-                    name = entry.get("name")
-                    if isinstance(name, str) and name:
-                        names.append(name)
-        result = tuple(names)
-        self._perp_dexs_cache = (time.monotonic(), result)
-        return result
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if isinstance(name, str) and name:
+                    names.append(name)
+                for row in entry.get("assetToStreamingOiCap") or []:
+                    market = row[0] if row else None
+                    if isinstance(market, str) and market:
+                        markets.append(market)
+        packed = (tuple(names), tuple(markets))
+        self._perp_dexs_cache = (time.monotonic(), packed[0], packed[1])
+        return packed
 
     # ------------------------------------------------------------------
     # Fee schedule (live fetch with fallback)
@@ -357,10 +387,11 @@ class HyperliquidAdapter:
     async def get_quote(
         self, base_asset: str, side: str, notional_usd: Decimal
     ) -> Quote:
-        asset = normalize_base_asset(base_asset)
-        mids = await self._all_mids()
-
-        coin = self._resolve_coin(asset, mids)
+        asset = canonical_base(base_asset)
+        native = await self._all_mids()
+        coin = self._resolve_coin(asset, native)
+        if coin is None:
+            coin = self._resolve_coin(asset, await self._hip3_universe())
         if coin is None:
             return Quote(
                 venue=self.venue,
@@ -478,6 +509,31 @@ class HyperliquidAdapter:
                 out[coin] = mid
         return out
 
+    async def _hip3_universe(self) -> dict[str, Decimal]:
+        """HIP-3 ``<dex>:<coin>`` mids plus ``perpDexs`` listings.
+
+        Native ``allMids`` has no gold/FX. ``xyz:GOLD`` is only on the xyz
+        book (and in ``perpDexs`` even when that book's mids are empty).
+        """
+        out: dict[str, Decimal] = {}
+        dexs = await self._list_sub_dexs()
+        if dexs:
+            results = await asyncio.gather(
+                *(self._all_mids_safe(d) for d in dexs),
+                return_exceptions=True,
+            )
+            for dex, mids in zip(dexs, results):
+                if not isinstance(mids, dict):
+                    continue
+                for coin, mid in mids.items():
+                    if not coin or coin[0] in "@#":
+                        continue
+                    key = coin if ":" in coin else f"{dex}:{coin}"
+                    out.setdefault(key, mid)
+        for market in await self._hip3_markets():
+            out.setdefault(market, Decimal(0))
+        return out
+
     def _resolve_coin(self, asset: str, mids: dict[str, Decimal]) -> str | None:
         """Find the Hyperliquid coin symbol for a normalized base asset."""
         if asset in mids:
@@ -487,29 +543,32 @@ class HyperliquidAdapter:
             if canonical == asset and alias in mids:
                 return alias
         for coin in mids:
-            if normalize_base_asset(coin) == asset:
+            if same_asset(coin, asset):
                 return coin
         return None
 
-    async def _native_predicted_funding_fracs(self) -> dict[str, Decimal]:
-        """Current hourly funding fraction per native-DEX coin.
+    async def _predicted_funding_fracs(self, dex: str | None = None) -> dict[str, Decimal]:
+        """Current hourly funding fraction per coin on one DEX.
 
-        ``metaAndAssetCtxs.funding`` is the rate a position opened now accrues
-        (premium + 0.01%/8h clamp, paid hourly). ``fundingHistory`` is the last
-        settlement and can lag by up to an hour — live SOL on 2026-09-02
-        was 0.00076%/h predicted vs 0.00125%/h last settled.
+        Native ``metaAndAssetCtxs`` names are bare (``BTC``). HIP-3 with
+        ``dex="xyz"`` names are namespaced (``xyz:GOLD``). ``fundingHistory``
+        uses the same names — ``GOLD`` 500s, ``xyz:GOLD`` returns the rate.
         """
+        key = dex or ""
         now = time.monotonic()
-        hit = self._funding_fracs_cache
+        hit = self._funding_fracs_by_dex.get(key)
         if hit is not None and now - hit[0] < _FUNDING_CTX_TTL_S:
             return hit[1]
+        payload: dict[str, object] = {"type": "metaAndAssetCtxs"}
+        if dex:
+            payload["dex"] = dex
         try:
-            data = await self._post({"type": "metaAndAssetCtxs"})
+            data = await self._post(payload)
         except VenueUnavailableError:
-            self._funding_fracs_cache = (now, {})
+            self._funding_fracs_by_dex[key] = (now, {})
             return {}
         if not isinstance(data, list) or len(data) < 2:
-            self._funding_fracs_cache = (now, {})
+            self._funding_fracs_by_dex[key] = (now, {})
             return {}
         universe = data[0].get("universe") or []
         ctxs = data[1] if isinstance(data[1], list) else []
@@ -519,7 +578,7 @@ class HyperliquidAdapter:
             frac = _dec((ctx or {}).get("funding"))
             if name and frac is not None:
                 out[name] = frac
-        self._funding_fracs_cache = (now, out)
+        self._funding_fracs_by_dex[key] = (now, out)
         return out
 
     async def _settled_funding_8h_bps(self, coin: str) -> Decimal | None:
@@ -536,6 +595,9 @@ class HyperliquidAdapter:
         if not data:
             return None
         latest = data[-1]
+        hist_coin = latest.get("coin")
+        if hist_coin and not same_asset(str(hist_coin), coin):
+            return None
         hourly_rate = _dec(latest.get("fundingRate"))
         if hourly_rate is None:
             return None
@@ -548,7 +610,7 @@ class HyperliquidAdapter:
         that need the position-holder's perspective (positive = holder
         receives) flip the sign against the holder's side.
         """
-        predicted = (await self._native_predicted_funding_fracs()).get(coin)
+        predicted = (await self._predicted_funding_fracs(_hip3_dex(coin))).get(coin)
         if predicted is not None:
             return predicted * FUNDING_HOURLY_TO_8H * BPS
         return await self._settled_funding_8h_bps(coin)
@@ -556,17 +618,17 @@ class HyperliquidAdapter:
     async def _annotate_current_funding(self, positions: list[Position]) -> None:
         """Fill ``current_funding_rate_8h_bps`` on each held position, in place.
 
-        Native coins share one ``metaAndAssetCtxs`` fetch. HIP-3 coins (absent
-        from that payload) fall back to per-coin ``fundingHistory``. A per-coin
-        failure leaves that position's rate as ``None`` (adapter-level
-        degradation is documented in §12.9), never as zero.
+        Native coins share one ``metaAndAssetCtxs`` fetch. HIP-3 coins use the
+        namespaced market (``xyz:GOLD``) on both predicted ctxs and
+        ``fundingHistory`` — the bare coin 500s. A per-coin failure leaves
+        that position's rate as ``None`` (§12.9), never as zero.
 
         The Hyperliquid published rate is positive when longs pay, so the
         POSITION HOLDER'S perspective flips against the position side:
         ``-published`` for a long holder (they pay when the rate is positive),
         ``+published`` for a short holder.
         """
-        coins = sorted({p.market.split(":", 1)[-1] for p in positions if p.market})
+        coins = sorted({p.market for p in positions if p.market})
         if not coins:
             return
         results = await asyncio.gather(
@@ -578,8 +640,7 @@ class HyperliquidAdapter:
             if isinstance(rate, Decimal):
                 rates[coin] = rate
         for position in positions:
-            coin = position.market.split(":", 1)[-1] if position.market else ""
-            published = rates.get(coin)
+            published = rates.get(position.market)
             if published is None:
                 continue
             sign = Decimal(-1) if position.side == "long" else Decimal(1)

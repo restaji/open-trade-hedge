@@ -224,3 +224,37 @@ def test_falls_back_to_group_max_leverage_when_pair_field_missing():
     # Same as the docs' worked example ratio: 4.875% price move.
     assert liq is not None
     assert liq == Decimal("100") * (Decimal(1) - Decimal("0.04875"))
+
+
+def test_resolve_pair_uses_from_and_to_not_first_from():
+    """EUR/USD must not attach EUR/GBP rollover, and EURUSD must resolve."""
+    adapter = OstiumAdapter.__new__(OstiumAdapter)
+    pairs = {
+        "9": {"id": "9", "from": "EUR", "to": "GBP"},
+        "2": {"id": "2", "from": "EUR", "to": "USD"},
+        "7": {"id": "7", "from": "USD", "to": "JPY"},
+        "1": {"id": "1", "from": "BTC", "to": "USD"},
+    }
+    eur = adapter._resolve_pair("EURUSD", pairs)
+    assert eur is not None and eur["id"] == "2"
+    assert adapter._resolve_pair("EUR", pairs)["id"] == "2"
+    assert adapter._resolve_pair("EURGBP", pairs)["id"] == "9"
+    assert adapter._resolve_pair("USDJPY", pairs)["id"] == "7"
+    assert adapter._resolve_pair("USD/JPY", pairs)["id"] == "7"
+    assert adapter._resolve_pair("BTC", pairs)["id"] == "1"
+
+
+def test_resolve_pair_commodities_and_hip3_aliases():
+    adapter = OstiumAdapter.__new__(OstiumAdapter)
+    pairs = {
+        "x": {"id": "x", "from": "XAU", "to": "USD"},
+        "w": {"id": "w", "from": "WTI", "to": "USD"},
+        "b": {"id": "b", "from": "BRENT", "to": "USD"},
+        "e": {"id": "e", "from": "EUR", "to": "USD"},
+    }
+    assert adapter._resolve_pair("GOLD", pairs)["id"] == "x"
+    assert adapter._resolve_pair("xyz:GOLD", pairs)["id"] == "x"
+    assert adapter._resolve_pair("XAU", pairs)["id"] == "x"
+    assert adapter._resolve_pair("CL", pairs)["id"] == "w"
+    assert adapter._resolve_pair("xyz:BRENTOIL", pairs)["id"] == "b"
+    assert adapter._resolve_pair("EUR", pairs)["id"] == "e"

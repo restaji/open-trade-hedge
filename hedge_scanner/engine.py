@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Iterable, Sequence
 
+from hedge_scanner.markets import canonical_base
 from hedge_scanner.models import LiquidationSpec, Position, Quote
 
 # --------------------------------------------------------------------------------------
@@ -384,12 +385,16 @@ def _fallback_normalize_base(symbol: str) -> str:
 
 def quote_base_asset(quote: Quote) -> str:
     """Base asset a quote refers to, preferring the explicit field."""
-    explicit = (getattr(quote, "base_asset", "") or "").strip().upper()
+    explicit = (getattr(quote, "base_asset", "") or "").strip()
     if explicit:
-        return explicit
+        return canonical_base(explicit) or explicit.upper()
     if _normalize_base is not None:
-        return str(_normalize_base(quote.market)).upper()
-    return _fallback_normalize_base(quote.market)
+        return canonical_base(str(_normalize_base(quote.market))) or str(
+            _normalize_base(quote.market)
+        ).upper()
+    return canonical_base(_fallback_normalize_base(quote.market)) or _fallback_normalize_base(
+        quote.market
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -823,9 +828,9 @@ def net_exposures(
     """
     buckets: dict[str, list[Position]] = {}
     for position in positions:
-        buckets.setdefault((position.base_asset or "").strip().upper(), []).append(
-            position
-        )
+        raw = (position.base_asset or "").strip()
+        key = canonical_base(raw) or raw.upper()
+        buckets.setdefault(key, []).append(position)
 
     material: list[NetExposure] = []
     dust: list[NetExposure] = []
@@ -1455,8 +1460,9 @@ def funding_arb_opportunities(
 
     held: dict[tuple[str, str, str], Decimal] = {}
     for position in position_list:
+        raw = (position.base_asset or "").strip()
         key = (
-            (position.base_asset or "").strip().upper(),
+            canonical_base(raw) or raw.upper(),
             position.venue,
             position.side,
         )
@@ -1749,7 +1755,8 @@ def scan(
     # use that; otherwise fall back to the reference table.
     mark_prices: dict[str, Decimal] = {}
     for p in position_list:
-        asset = (p.base_asset or "").strip().upper()
+        raw = (p.base_asset or "").strip()
+        asset = canonical_base(raw) or raw.upper()
         if asset and p.mark_price and Decimal(p.mark_price) > ZERO:
             mark_prices.setdefault(asset, Decimal(p.mark_price))
 

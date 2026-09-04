@@ -196,6 +196,14 @@ async def test_quote_is_unavailable_for_an_unlisted_asset(replay_client):
     assert quote.borrow_rate_8h_bps == Decimal(0)
 
 
+@pytest.mark.parametrize("stamp", ["WBTC", "wBTC", "wETH", "WETH", "WSOL"])
+async def test_quote_resolves_wrapped_stamps(replay_client, stamp):
+    adapter = JupiterAdapter(client=replay_client)
+    quote = await adapter.get_quote(stamp, "short", Decimal(10_000))
+    assert quote.available is True
+    assert quote.base_asset in {"BTC", "ETH", "SOL"}
+
+
 # ---------------------------------------------------------------------------
 # Doves oracle (Jupiter Perps mark price source)
 # ---------------------------------------------------------------------------

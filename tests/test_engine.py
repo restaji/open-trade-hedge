@@ -217,6 +217,37 @@ class TestNetting:
         assert by_asset["BTC"].net_notional_usd == D(10000)
         assert by_asset["ETH"].net_notional_usd == D(-10000)
 
+    def test_fx_and_hip3_stamps_net_across_venues(self):
+        """Ostium EUR, Avantis EURUSD, HIP-3 xyz:GOLD must share one bucket."""
+        material, dust = net_exposures(
+            [
+                make_position("ostium", "EUR", "long", "100000"),
+                make_position("hyperliquid", "EURUSD", "short", "100000"),
+            ]
+        )
+        assert material == ()
+        (exposure,) = dust
+        assert exposure.base_asset == "EURUSD"
+        assert exposure.venues == ("ostium", "hyperliquid")
+
+        material, _ = net_exposures(
+            [
+                make_position("hyperliquid", "xyz:GOLD", "long", "50000"),
+                make_position("ostium", "XAU", "short", "20000"),
+            ]
+        )
+        (gold,) = material
+        assert gold.base_asset == "XAU"
+        assert gold.net_notional_usd == D(30000)
+
+        material, _ = net_exposures(
+            [
+                make_position("ostium", "EURGBP", "long", "10000"),
+                make_position("ostium", "EURUSD", "short", "10000"),
+            ]
+        )
+        assert {e.base_asset for e in material} == {"EURGBP", "EURUSD"}
+
     def test_side_overrides_unsigned_notional_from_a_sloppy_adapter(self):
         """An unsigned short must never be netted as a long."""
         sloppy = make_position("pacifica", "BTC", "short", "25000")

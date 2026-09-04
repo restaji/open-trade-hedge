@@ -37,7 +37,8 @@ from decimal import Decimal
 
 import httpx
 
-from ..assets import normalize_base_asset
+from ..assets import pair_base_asset
+from ..markets import canonical_base
 from ..models import Position, Quote
 from .base import VenueUnavailableError, make_http_client, record_mark
 
@@ -299,7 +300,9 @@ class OstiumAdapter:
             venue=self.venue,
             address=address,
             market=market,
-            base_asset=normalize_base_asset(from_sym),
+            base_asset=canonical_base(
+                f"{from_sym}/{to_sym}" if to_sym else from_sym
+            ),
             quote_asset=QUOTE_ASSET,
             side=side,
             size_base=size_base,
@@ -416,10 +419,13 @@ class OstiumAdapter:
                 if raw_mark is not None and raw_mark > 0
                 else None
             )
-            if from_sym:
-                record_mark(out, from_sym, mark)
+            canon = canonical_base(f"{from_sym}/{to_sym}" if to_sym else from_sym)
+            if canon:
+                record_mark(out, canon, mark)
             if from_sym and to_sym:
                 record_mark(out, f"{from_sym}/{to_sym}", mark)
+            elif from_sym:
+                record_mark(out, from_sym, mark)
         return out
 
     # ------------------------------------------------------------------
@@ -429,7 +435,7 @@ class OstiumAdapter:
     async def get_quote(
         self, base_asset: str, side: str, notional_usd: Decimal
     ) -> Quote:
-        asset = normalize_base_asset(base_asset)
+        asset = canonical_base(base_asset)
         pairs = await self._get_pairs()
 
         target_pair = self._resolve_pair(asset, pairs)
@@ -499,8 +505,14 @@ class OstiumAdapter:
     # ------------------------------------------------------------------
 
     def _resolve_pair(self, asset: str, pairs: dict[str, dict]) -> dict | None:
+        want = canonical_base(asset)
+        if not want:
+            return None
+        aliased: dict | None = None
         for pair in pairs.values():
-            from_sym = (pair.get("from") or "").upper()
-            if normalize_base_asset(from_sym) == asset:
+            key = pair_base_asset(pair.get("from") or "", pair.get("to") or "")
+            if key == want:
                 return pair
-        return None
+            if aliased is None and canonical_base(key) == want:
+                aliased = pair
+        return aliased

@@ -279,7 +279,16 @@ h1 { font: 600 22px/1.05 var(--sans); letter-spacing: -.03em; white-space: nowra
 .venue-va .venue-mark { background: #2563eb; }
 .venue-on .venue-mark { background: #0d9488; }
 .venue-pa .venue-mark { background: #0284c7; }
+.venue-hl .venue-mark { background: #16a34a; }
+.venue-os .venue-mark { background: #6366f1; }
 .venue-other .venue-mark { background: var(--text-faint); }
+.dhead-venue {
+  display: flex;
+  justify-content: flex-end;
+}
+.dhead-venue .venue-badge {
+  color: var(--text-dim);
+}
 
 /* carry cell — single signed line */
 .carry-cell.signed-pos { color: var(--pos); }
@@ -299,12 +308,89 @@ h1 { font: 600 22px/1.05 var(--sans); letter-spacing: -.03em; white-space: nowra
   font-family: var(--mono);
 }
 
-/* ── detail comparison grid (independent of table colgroup) ── */
+/* ── detail: left grid + right verdict panel ── */
 .detail {
-  max-width: 720px;
-  padding: 8px 0 12px 20px;
+  width: 100%;
+  padding: 12px 20px 16px;
   background: var(--surface);
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 32px;
 }
+.detail-main {
+  min-width: 0;
+}
+.detail-verdict {
+  min-width: 0;
+  max-width: 380px;
+  border-left: 1px solid var(--rule);
+  padding-left: 28px;
+}
+.verdict-foot {
+  margin-top: 24px;
+}
+.verdict-hd {
+  font: 400 11px/1 var(--sans);
+  color: var(--text-faint);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 12px;
+}
+.verdict-title {
+  font: 600 15px/1.35 var(--sans);
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.verdict-lede {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+.verdict-note {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.verdict-block {
+  margin-top: 16px;
+}
+.verdict-block-hd {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.verdict-scenarios {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+}
+.verdict-scenarios td {
+  padding: 3px 0;
+  white-space: nowrap;
+}
+.verdict-scenarios td:first-child {
+  color: var(--text-dim);
+  padding-right: 16px;
+}
+.verdict-scenarios td:last-child {
+  text-align: right;
+  color: var(--text);
+}
+.verdict-exit {
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.verdict-exit-amt {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  margin-left: 6px;
+}
+
 .dgrid {
   display: grid;
   grid-template-columns: 160px minmax(0, 1fr) minmax(0, 1fr);
@@ -360,11 +446,6 @@ h1 { font: 600 22px/1.05 var(--sans); letter-spacing: -.03em; white-space: nowra
 .drow-net .dlabel { color: var(--text-dim); }
 .dval .cost { color: var(--text-dim); }
 .dmsg .dval { text-align: right; font-family: var(--sans); font-size: 12px; }
-.dval-act {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 10px;
-}
 
 .hedge-btn {
   display: inline-flex;
@@ -440,5 +521,13 @@ h1 { font: 600 22px/1.05 var(--sans); letter-spacing: -.03em; white-space: nowra
   .summary-stats { justify-content: flex-start; }
   .summary-primary .big { font-size: 28px; }
   .dgrid { grid-template-columns: 140px minmax(0, 1fr) minmax(0, 1fr); column-gap: 12px; }
-  .detail { max-width: 100%; }
+  .detail { grid-template-columns: 1fr; }
+  .detail-verdict {
+    max-width: none;
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+    padding-left: 0;
+    padding-top: 16px;
+    margin-top: 12px;
+  }
 }

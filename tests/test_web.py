@@ -323,6 +323,33 @@ def test_hedge_plan_cross_venue_residual_on_net_side():
     assert plan[id(jup)]["role"] == "offsetting"
 
 
+def test_avantis_lists_ostium_eur_as_eurusd():
+    """Ostium FX and HIP-3 names must still count as listed on Avantis."""
+    from hedge_scanner.web import _avantis_can_hedge
+
+    assert _avantis_can_hedge("EUR") is True
+    assert _avantis_can_hedge("EURUSD") is True
+    assert _avantis_can_hedge("EUR/USD") is True
+    assert _avantis_can_hedge("GBPUSD") is True
+    assert _avantis_can_hedge("USDJPY") is True
+    assert _avantis_can_hedge("USD/JPY") is True
+    assert _avantis_can_hedge("xyz:GOLD") is True
+    assert _avantis_can_hedge("xyz:EUR") is True
+    assert _avantis_can_hedge("xyz:GBP") is True
+    assert _avantis_can_hedge("xyz:JPY") is True
+    assert _avantis_can_hedge("EURGBP") is False
+
+
+def test_pos_to_dict_ostium_xau_is_commodity_not_crypto():
+    """Ostium XAU is a commodity. The UI must not stamp every market as Crypto."""
+    from hedge_scanner.web import _pos_to_dict
+
+    xau = _pos_to_dict(_pos("ostium", "XAU", "long", "3824"))
+    btc = _pos_to_dict(_pos("ostium", "BTC", "long", "10000"))
+    assert xau["asset_class"] == "commodity"
+    assert btc["asset_class"] == "crypto"
+
+
 def test_avantis_ui_net_rate_long_is_positive_when_longs_pay():
     """Funding print: + = pays, − = receives.
 

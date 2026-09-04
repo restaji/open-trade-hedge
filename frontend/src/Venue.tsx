@@ -2,8 +2,10 @@ import { useState } from "react";
 import { venueLabel } from "./format";
 import avantisIcon from "./assets/venues/avantis.png";
 import grvtIcon from "./assets/venues/grvt.png";
+import hyperliquidIcon from "./assets/venues/hyperliquid.png";
 import jupiterIcon from "./assets/venues/jupiter.png";
 import ondoIcon from "./assets/venues/ondo.svg";
+import ostiumIcon from "./assets/venues/ostium.png";
 import pacificaIcon from "./assets/venues/pacifica.svg";
 import variationalIcon from "./assets/venues/variational.png";
 
@@ -15,6 +17,8 @@ export const VENUE_ICONS: Record<string, string> = {
   variational: variationalIcon,
   ondo: ondoIcon,
   avantis: avantisIcon,
+  hyperliquid: hyperliquidIcon,
+  ostium: ostiumIcon,
 };
 
 const VENUE_TONE: Record<string, string> = {
@@ -24,6 +28,8 @@ const VENUE_TONE: Record<string, string> = {
   variational: "venue-va",
   ondo: "venue-on",
   avantis: "venue-ava",
+  hyperliquid: "venue-hl",
+  ostium: "venue-os",
 };
 
 export function resolveVenueSlug(raw: string): string | null {

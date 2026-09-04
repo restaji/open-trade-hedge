@@ -112,9 +112,26 @@ def _notional_10k_coin(prices, pair_index: int) -> Decimal:
     return Decimal("10000") / prices[pair_index]
 
 
-# --------------------------------------------------------------------------
-# THE CENTRAL MECHANIC: maker vs taker from OI skew, per hedge direction
-# --------------------------------------------------------------------------
+def test_resolve_pair_accepts_fx_compound_and_inverted_quote(snapshot):
+    """Ostium/HL stamps EURUSD or USDJPY; old matcher required from==want and to==USD."""
+    eur = avantis.resolve_pair(snapshot, "EURUSD")
+    assert eur is not None and eur["from"] == "EUR" and eur["to"] == "USD"
+    assert avantis.resolve_pair(snapshot, "EUR")["from"] == "EUR"
+    assert avantis.resolve_pair(snapshot, "EUR/USD")["from"] == "EUR"
+    jpy = avantis.resolve_pair(snapshot, "USDJPY")
+    assert jpy is not None and jpy["from"] == "USD" and jpy["to"] == "JPY"
+    assert avantis.resolve_pair(snapshot, "USD/JPY")["to"] == "JPY"
+    btc = avantis.resolve_pair(snapshot, "BTC")
+    assert btc is not None and btc["from"] == "BTC" and btc["to"] == "USD"
+    assert avantis.resolve_pair(snapshot, "xyz:GOLD")["from"] == "XAU"
+
+
+def test_resolve_pair_upside_is_not_the_standard_book(snapshot):
+    std = avantis.resolve_pair(snapshot, "BTC", upside=False)
+    up = avantis.resolve_pair(snapshot, "BTC", upside=True)
+    assert std is not None and up is not None
+    assert std["from"] == "BTC"
+    assert up["from"] == "BTC_UPSIDE"
 
 
 def test_fixture_btc_is_long_heavy(snapshot):
@@ -403,6 +420,25 @@ def test_rwa_quote_is_flagged_promotional_and_revocable(offline, snapshot):
     assert quote.borrow_rate_8h_bps == raw_margin
     assert quote.price_impact_bps > 0
     assert quote.all_in_cost_bps > 0
+
+
+def test_quote_hedge_accepts_hip3_and_fx_stamps(offline):
+    gold = asyncio.run(
+        avantis.quote_hedge("xyz:GOLD", "short", Decimal("10000"), Decimal("24"))
+    )
+    assert gold is not None
+    assert gold.base_asset == "XAU"
+    assert gold.available is True
+    eur = asyncio.run(
+        avantis.quote_hedge("EUR", "short", Decimal("10000"), Decimal("24"))
+    )
+    assert eur is not None
+    assert eur.base_asset == "EURUSD"
+    jpy = asyncio.run(
+        avantis.quote_hedge("USDJPY", "short", Decimal("10000"), Decimal("24"))
+    )
+    assert jpy is not None
+    assert jpy.base_asset == "USDJPY"
 
 
 def test_crypto_quote_is_not_flagged_promotional(offline):

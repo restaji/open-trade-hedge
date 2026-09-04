@@ -40,7 +40,6 @@ from hedge_scanner.adapters import (
     PacificaAdapter,
 )
 from hedge_scanner.adapters.base import make_http_client
-from hedge_scanner.assets import normalize_base_asset
 from hedge_scanner.engine import (
     DEFAULT_DUST_USD,
     FEE_SCHEDULE,
@@ -53,7 +52,13 @@ from hedge_scanner.liquidation import (
     LIQUIDATION_SPECS,
     compute_liquidation_risk,
 )
-from hedge_scanner.markets import VENUE_MARKETS
+from hedge_scanner.markets import (
+    VENUE_MARKETS,
+    can_hedge,
+    canonical_base,
+    market_for,
+    same_asset,
+)
 
 # Position-source venues we can price a source-side carry for (their public
 # quote endpoints don't need auth, even for the ones whose positions do).
@@ -194,7 +199,7 @@ def _hedge_plan(
         candidates = [
             p
             for p in positions
-            if (p.base_asset or "").strip().upper() == finding.base_asset
+            if same_asset(p.base_asset, finding.base_asset)
             and p.side == residual_side
         ]
         if candidates:
@@ -204,7 +209,7 @@ def _hedge_plan(
 
     plan: dict[int, dict[str, Any]] = {}
     for pos in positions:
-        asset = (pos.base_asset or "").strip().upper()
+        asset = canonical_base(pos.base_asset) or (pos.base_asset or "").strip().upper()
         exposure = by_asset.get(asset)
         default_side = "short" if pos.side == "long" else "long"
         if exposure is None or not exposure.is_self_hedged:
@@ -246,10 +251,13 @@ def _finding_to_dict(finding: Any) -> dict[str, Any]:
 
 
 def _pos_to_dict(p: Any) -> dict:
+    spec = market_for(p.base_asset, p.venue)
+    book = canonical_base(p.base_asset) or p.base_asset
     return {
         "venue": p.venue,
         "market": p.market,
-        "base_asset": p.base_asset,
+        "base_asset": book,
+        "asset_class": spec.asset_class if spec else None,
         "side": p.side,
         "size_base": _d(p.size_base),
         "notional_usd": _d(p.notional_usd),
@@ -265,12 +273,16 @@ def _pos_to_dict(p: Any) -> dict:
 
 
 def _avantis_can_hedge(base_asset: str) -> bool:
-    avantis_markets = VENUE_MARKETS.get("avantis", {})
-    norm = normalize_base_asset(base_asset)
-    if norm in avantis_markets:
+    """True when Avantis lists this underlying.
+
+    Accepts venue stamps ``EUR``, ``EURUSD``, ``EUR/USD``, ``xyz:GOLD``,
+    ``USDJPY``. ``can_hedge`` uses the registry key; ``same_asset`` covers
+    HIP-3 and FX compound forms the registry does not spell identically.
+    """
+    if can_hedge(base_asset, "avantis"):
         return True
-    for sym in avantis_markets:
-        if normalize_base_asset(sym) == norm:
+    for sym in VENUE_MARKETS.get("avantis", {}):
+        if same_asset(sym, base_asset):
             return True
     return False
 

@@ -24,6 +24,8 @@ from typing import Any
 import httpx
 
 from hedge_scanner.adapters.base import make_http_client, record_mark
+from hedge_scanner.assets import normalize_base_asset, pair_base_asset
+from hedge_scanner.markets import canonical_base
 from hedge_scanner.models import Quote
 
 VENUE = "avantis"
@@ -197,8 +199,14 @@ async def get_marks(client: httpx.AsyncClient | None = None) -> dict[str, Decima
         bucket.append((from_sym, to_sym, price))
     out: dict[str, Decimal] = {}
     for from_sym, to_sym, price in (*standard, *upside):
-        record_mark(out, from_sym, price)
+        canon = pair_base_asset(from_sym, to_sym)
         record_mark(out, f"{from_sym}/{to_sym}", price)
+        if canon:
+            record_mark(out, canon, price)
+        # Bare ``from`` only when it is the canonical book (BTC, XAU). Never
+        # stamp ``EUR`` or ``USD`` — those collide across EUR/GBP and USD/JPY.
+        if canon == normalize_base_asset(from_sym):
+            record_mark(out, from_sym, price)
     return out
 
 
@@ -261,24 +269,47 @@ def parse_spread_response(payload: Any) -> Decimal | None:
     return None
 
 
+def _record_book_key(record: dict[str, Any], *, upside: bool) -> str | None:
+    """Canonical book key for one Avantis pairInfos row, or None if the other book.
+
+    Standard perps: ``BTC/USD`` → ``BTC``, ``EUR/USD`` → ``EURUSD``,
+    ``USD/JPY`` → ``USDJPY``. Upside rows (``BTC_UPSIDE``) only when
+    ``upside=True``.
+    """
+    frm = str(record.get("from") or "").strip()
+    to = str(record.get("to") or "").strip()
+    if not frm:
+        return None
+    is_upside = frm.upper().endswith("_UPSIDE")
+    if upside != is_upside:
+        return None
+    if is_upside:
+        return normalize_base_asset(frm)
+    return pair_base_asset(frm, to or None)
+
+
 def resolve_pair(snapshot: dict[str, Any], base_asset: str, upside: bool = False) -> dict[str, Any] | None:
     """Find the pair record for a normalized base asset, or ``None``.
 
-    Matches on ``from``/``to`` rather than a hardcoded index map. Upside Perps
-    are separate records named ``{BASE}_UPSIDE``.
+    Accepts ``EUR``, ``EURUSD``, ``EUR/USD``, ``USDJPY``, ``USD/JPY``, and
+    crypto tickers. Matching is on the canonical book key, not ``from == want
+    and to == USD`` — that miss would drop every inverted FX pair.
     """
-    want = base_asset.strip().upper()
-    if upside:
-        want = f"{want}_UPSIDE"
+    want = canonical_base((base_asset or "").strip())
+    if not want:
+        return None
+    aliased: dict[str, Any] | None = None
     for record in (snapshot.get("pairInfos") or {}).values():
         if not isinstance(record, dict):
             continue
-        if str(record.get("from") or "").upper() != want:
+        key = _record_book_key(record, upside=upside)
+        if key is None:
             continue
-        if str(record.get("to") or "").upper() != "USD":
-            continue
-        return record
-    return None
+        if key == want:
+            return record
+        if aliased is None and canonical_base(key) == want:
+            aliased = record
+    return aliased
 
 
 @dataclass(frozen=True)
@@ -497,7 +528,7 @@ async def quote_hedge(
     Returns ``None`` only when Avantis does not list the asset. Every other
     refusal is ``available=False`` with a reason in ``notes``.
     """
-    base = base_asset.strip().upper()
+    base = canonical_base(base_asset) or (base_asset or "").strip().upper()
     side = _validate_side(hedge_side)
     if side is None:
         return _unavailable(base, hedge_side, notional_usd, f"{base}/USD",
@@ -707,7 +738,7 @@ async def quote_upside_hedge(
     without a price-move assumption; the schedule is in ``profit_share_schedule``.
     ``taker_fee_bps`` / ``close_fee_bps`` carry the live pair-record values.
     """
-    base = base_asset.strip().upper()
+    base = canonical_base(base_asset) or (base_asset or "").strip().upper()
     side = _validate_side(hedge_side)
     if side is None:
         return _unavailable(base, hedge_side, notional_usd, f"{base}_UPSIDE/USD",

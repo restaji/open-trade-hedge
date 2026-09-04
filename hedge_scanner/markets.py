@@ -32,6 +32,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from hedge_scanner.assets import normalize_base_asset
+
 __all__ = [
     "MarketSpec",
     "VENUE_MARKETS",
@@ -42,6 +44,8 @@ __all__ = [
     "venues_listing",
     "can_hedge",
     "resolve_asset",
+    "canonical_base",
+    "same_asset",
     "market_for",
 ]
 
@@ -171,6 +175,7 @@ VENUE_MARKETS: dict[str, dict[str, MarketSpec]] = {
         "USDJPY": MarketSpec("USD/JPY", "forex", Decimal("500")),
         "USDSEK": MarketSpec("USD/SEK", "forex", Decimal("100")),
         "USDSGD": MarketSpec("USD/SGD", "forex", Decimal("100")),
+        "USDKRW": MarketSpec("USD/KRW", "forex", Decimal("100")),
     },
     "grvt": {
         "AAVE": MarketSpec("AAVE_USDT_Perp", "crypto", Decimal("10")),
@@ -493,11 +498,18 @@ VENUE_MARKETS: dict[str, dict[str, MarketSpec]] = {
         "XAU": MarketSpec("XAU-USD.P", "commodity", Decimal("25")),
     },
     "hyperliquid": {
-        # 177 active perp markets. Captured from POST api.hyperliquid.xyz/info
-        # {"type": "meta"} on 2026-08-19. All are crypto; Hyperliquid has no
-        # equity, commodity, or forex perps on its validator-operated book
-        # (HIP-3 deployer markets exist for RWA but are not listed here).
-        # Symbols are the venue-native coin names. k-prefix = 1000x contracts.
+        # Native DEX: crypto perps from POST meta (2026-08-19). HIP-3 xyz FX
+        # verified 2026-09-04: xyz:EUR mid ~1.16 (EURUSD), xyz:GBP ~1.35 (GBPUSD),
+        # xyz:JPY ~156 (USDJPY), xyz:KRW ~1356 (USDKRW). Not EURGBP — that cross
+        # is not a xyz market.
+        "EURUSD": MarketSpec("xyz:EUR", "forex", Decimal("20")),
+        "GBPUSD": MarketSpec("xyz:GBP", "forex", Decimal("20")),
+        "USDJPY": MarketSpec("xyz:JPY", "forex", Decimal("20")),
+        "USDKRW": MarketSpec("xyz:KRW", "forex", Decimal("20")),
+        "XAU": MarketSpec("xyz:GOLD", "commodity", Decimal("20")),
+        "XAG": MarketSpec("xyz:SILVER", "commodity", Decimal("20")),
+        "WTI": MarketSpec("xyz:CL", "commodity", Decimal("20")),
+        "BRENT": MarketSpec("xyz:BRENTOIL", "commodity", Decimal("20")),
         "0G": MarketSpec("0G", "crypto", Decimal("3")),
         "2Z": MarketSpec("2Z", "crypto", Decimal("3")),
         "AAVE": MarketSpec("AAVE", "crypto", Decimal("10")),
@@ -824,17 +836,31 @@ ASSET_ALIASES: dict[str, str] = {
     "PAYP": "PYPL",
     "LGELEC": "LGELECTRONICS",
     # Forex -- Avantis stores these as separate from/to fields
+    # Forex -- Avantis stores these as separate from/to fields.
+    # HIP-3 (xyz:EUR, xyz:GBP, xyz:JPY) stamps the USD-quoted currency only;
+    # compound crosses (GBPJPY, EURGBP) stay two-legged and must not hit these.
     "EUR/USD": "EURUSD",
     "EUR": "EURUSD",
-    "USD/JPY": "USDJPY",
     "GBP/USD": "GBPUSD",
-    "USD/CAD": "USDCAD",
-    "USD/CHF": "USDCHF",
-    "USD/SEK": "USDSEK",
+    "GBP": "GBPUSD",
     "AUD/USD": "AUDUSD",
+    "AUD": "AUDUSD",
     "NZD/USD": "NZDUSD",
+    "NZD": "NZDUSD",
+    "USD/JPY": "USDJPY",
+    "JPY": "USDJPY",
+    "USD/CAD": "USDCAD",
+    "CAD": "USDCAD",
+    "USD/CHF": "USDCHF",
+    "CHF": "USDCHF",
+    "USD/SEK": "USDSEK",
+    "SEK": "USDSEK",
     "USD/SGD": "USDSGD",
+    "SGD": "USDSGD",
     "USD/CNH": "USDCNH",
+    "CNH": "USDCNH",
+    "USD/KRW": "USDKRW",
+    "KRW": "USDKRW",
     # Wrapped assets -- Jupiter identifies markets by mint, so wBTC/wETH arrive as tickers
     "WBTC": "BTC",
     "XBT": "BTC",
@@ -869,6 +895,28 @@ SCALE_MISMATCH: dict[str, str] = {
 }
 
 
+def canonical_base(symbol: str) -> str:
+    """Single book key for any venue-native stamp.
+
+    HIP-3 ``xyz:GOLD`` → ``XAU``, Ostium ``EUR`` → ``EURUSD``, ``USD/JPY`` →
+    ``USDJPY``. Crosses keep both legs: ``EURGBP`` is not ``EURUSD``.
+    """
+    if not symbol:
+        return ""
+    return resolve_asset(normalize_base_asset(symbol))
+
+
+def same_asset(left: str, right: str) -> bool:
+    """True when two venue-native tickers are the same underlying book.
+
+    ``EUR`` aliases to ``EURUSD`` (Avantis/Ostium USD-quoted euro). ``EURGBP``
+    does not. ``xyz:GOLD`` and ``XAU`` match via ``normalize_base_asset``.
+    """
+    if not left or not right:
+        return False
+    return canonical_base(left) == canonical_base(right)
+
+
 def resolve_asset(symbol: str) -> str:
     """Resolve a venue-native symbol or ticker alias to a canonical base asset.
 
@@ -898,7 +946,7 @@ def venues_listing(base_asset: str) -> list[str]:
     >>> venues_listing("NOT_A_REAL_ASSET")
     []
     """
-    asset = resolve_asset(base_asset)
+    asset = canonical_base(base_asset)
     return [v for v in VENUES if asset in VENUE_MARKETS[v]]
 
 
@@ -915,10 +963,10 @@ def can_hedge(base_asset: str, venue: str) -> bool:
     >>> can_hedge("JPM", "avantis")
     False
     """
-    market = VENUE_MARKETS.get(venue, {}).get(resolve_asset(base_asset))
+    market = VENUE_MARKETS.get(venue, {}).get(canonical_base(base_asset))
     return market is not None and market.active
 
 
 def market_for(base_asset: str, venue: str) -> MarketSpec | None:
     """The ``MarketSpec`` for an asset on a venue, or None if it is not listed."""
-    return VENUE_MARKETS.get(venue, {}).get(resolve_asset(base_asset))
+    return VENUE_MARKETS.get(venue, {}).get(canonical_base(base_asset))

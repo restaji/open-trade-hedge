@@ -182,6 +182,23 @@ def _strip_hip3_prefix(symbol: str) -> str:
     return symbol
 
 
+def pair_base_asset(base: str, quote: str | None = None) -> str:
+    """Canonical book key for a venue ``from``/``to`` pair.
+
+    Crypto and commodities collapse the USD quote (``BTC/USD`` → ``BTC``,
+    ``XAU/USD`` → ``XAU``). FX keeps both legs (``EUR/USD`` → ``EURUSD``,
+    ``USD/JPY`` → ``USDJPY``). Passing only ``base`` is the old single-leg
+    path and must not be used for FX — ``EUR`` is not ``EURUSD``.
+    """
+    base = (base or "").strip()
+    quote = (quote or "").strip() if quote else ""
+    if not base:
+        return ""
+    if quote:
+        return normalize_base_asset(f"{base}/{quote}")
+    return normalize_base_asset(base)
+
+
 def normalize_base_asset(symbol: str) -> str:
     """Normalize a venue-native symbol or ticker to a canonical base asset.
 

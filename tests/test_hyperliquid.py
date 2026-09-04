@@ -350,6 +350,53 @@ async def test_quote_unlisted_asset(replay_client):
     assert q.available is False
 
 
+async def test_quote_k_prefix_and_hip3_stamps(replay_client):
+    """Source-carry lookup must find kPEPE and xyz:GOLD from any stamp."""
+    adapter = HyperliquidAdapter(
+        client=replay_client, api_url="https://api.hyperliquid.xyz/info"
+    )
+    pepe = await adapter.get_quote("PEPE", "short", Decimal(10_000))
+    assert pepe.market == "kPEPE"
+    assert pepe.base_asset == "PEPE"
+    assert pepe.available is True
+
+    gold = await adapter.get_quote("XAU", "short", Decimal(10_000))
+    assert gold.market == "xyz:GOLD"
+    assert gold.base_asset == "XAU"
+    hip = await adapter.get_quote("xyz:GOLD", "long", Decimal(10_000))
+    assert hip.market == "xyz:GOLD"
+    brent = await adapter.get_quote("BRENT", "short", Decimal(10_000))
+    assert brent.market == "xyz:BRENTOIL"
+    wti = await adapter.get_quote("WTI", "short", Decimal(10_000))
+    assert wti.market == "xyz:CL"
+    eur = await adapter.get_quote("EUR", "short", Decimal(10_000))
+    assert eur.market == "xyz:EUR"
+    assert eur.base_asset == "EURUSD"
+    gbp = await adapter.get_quote("GBPUSD", "short", Decimal(10_000))
+    assert gbp.market == "xyz:GBP"
+    assert gbp.base_asset == "GBPUSD"
+    jpy = await adapter.get_quote("USDJPY", "short", Decimal(10_000))
+    assert jpy.market == "xyz:JPY"
+    assert jpy.base_asset == "USDJPY"
+
+
+async def test_hip3_quote_requests_namespaced_funding(replay_client, monkeypatch):
+    """Live fundingHistory 500s on GOLD and 200s on xyz:GOLD (verified 2026-09-04)."""
+    adapter = HyperliquidAdapter(
+        client=replay_client, api_url="https://api.hyperliquid.xyz/info"
+    )
+    seen: list[str] = []
+    original = adapter._latest_funding_8h_bps
+
+    async def capture(coin: str):
+        seen.append(coin)
+        return await original(coin)
+
+    monkeypatch.setattr(adapter, "_latest_funding_8h_bps", capture)
+    await adapter.get_quote("XAU", "short", Decimal(10_000))
+    assert seen == ["xyz:GOLD"]
+
+
 # ------------------------------------------------------------------
 # Health
 # ------------------------------------------------------------------
